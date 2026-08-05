@@ -36,5 +36,4 @@ class StreamConfig:
     """Streaming-engine knobs; defaults chosen by the budget solver (residency.py)."""
 
     gpu_slots: int = 2  # reusable GPU weight buffers (double-buffer)
-    ring_depth: int = 3  # pinned CPU prefetch buffers
-    lookahead: int = 2  # blocks prefetched ahead of the schedule cursor
+    ring_depth: int = 3  # pinned CPU buffers; also bounds how far IO reads ahead
