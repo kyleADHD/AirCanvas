@@ -64,4 +64,8 @@ markers = [
     "gpu: tests requiring a CUDA GPU (deselected in CI; run with -m gpu)",
     "network: tests that download from the HF Hub (deselected by default; run with -m network)",
 ]
+# Default selection is the offline CPU suite, so a bare `pytest` is green on any
+# machine. The other two tiers are opt-in:
+#   pytest -m gpu       (needs CUDA)
+#   pytest -m network   (needs the Hub; pulls ~1.5 MB of tiny test models)
 addopts = "-m 'not gpu and not network'"

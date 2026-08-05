@@ -8,6 +8,7 @@ from safetensors import safe_open
 
 from aircanvas.sharding.manifest import DONE_SUFFIX, Manifest
 from aircanvas.sharding.splitter import NotEnoughSpaceError, split_model
+from aircanvas.streaming.prefetch import ShardHeader
 
 
 def read_shard(path: Path) -> dict[str, torch.Tensor]:
@@ -94,9 +95,31 @@ def test_preflight_raises_when_disk_full(flux_checkpoint, tmp_path: Path, monkey
         split_model(str(flux_checkpoint), cache_dir=tmp_path / "cache", compute_dtype=None)
 
 
-def test_compression_not_implemented_yet(flux_checkpoint, tmp_path: Path) -> None:
-    with pytest.raises(NotImplementedError, match="M4"):
-        split_model(str(flux_checkpoint), cache_dir=tmp_path / "c", compression="fp8")
+def test_nf4_not_implemented_yet(flux_checkpoint, tmp_path: Path) -> None:
+    with pytest.raises(NotImplementedError, match="M5"):
+        split_model(str(flux_checkpoint), cache_dir=tmp_path / "c", compression="nf4")
+
+
+def test_unknown_compression_raises(flux_checkpoint, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Unknown compression"):
+        split_model(str(flux_checkpoint), cache_dir=tmp_path / "c", compression="int3")
+
+
+def test_fp8_requires_explicit_compute_dtype(flux_checkpoint, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="explicit compute_dtype"):
+        split_model(
+            str(flux_checkpoint), cache_dir=tmp_path / "c", compression="fp8", compute_dtype=None
+        )
+
+
+def test_split_records_materialized_bytes(flux_checkpoint, tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    manifest = split_model(str(flux_checkpoint), cache_dir=cache, compute_dtype="bfloat16")
+    # Uncompressed: materialised == payload bytes, i.e. file size minus header.
+    for shard in manifest.blocks:
+        assert shard.load_bytes is not None
+        assert 0 < shard.load_bytes <= shard.n_bytes
+        assert shard.materialized_bytes == shard.load_bytes
 
 
 def test_manifest_roundtrip(flux_checkpoint, tmp_path: Path) -> None:
@@ -122,3 +145,23 @@ def test_cli_split(flux_checkpoint, tmp_path: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert "Split complete" in out
     assert "10 blocks" in out
+    assert "compression: none" in out
+
+
+def test_cli_split_fp8(flux_checkpoint, tmp_path: Path, capsys) -> None:
+    from aircanvas.cli import main
+
+    cache = tmp_path / "cli_fp8"
+    rc = main(["split", str(flux_checkpoint), "--cache-dir", str(cache), "--compression", "fp8"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "compression: fp8" in out and "materialised in bfloat16" in out
+    manifest = Manifest.load(cache)
+    assert manifest.compression == "fp8"
+    # Size comparisons need a toy whose payload outweighs the safetensors
+    # header (see test_quant.py); here just confirm the payloads really are fp8
+    # and that the shards stayed alignable.
+    for shard in manifest.blocks:
+        header = ShardHeader.parse(cache / shard.file)
+        assert header.aligned
+        assert any(m.dtype is torch.float8_e4m3fn for m in header.tensors), shard.file

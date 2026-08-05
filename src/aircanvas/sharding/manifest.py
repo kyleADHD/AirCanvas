@@ -24,8 +24,16 @@ DONE_SUFFIX = ".done"
 class BlockShard:
     name: str  # module path in the model, e.g. "transformer_blocks.0"
     file: str  # relative filename, e.g. "block_0000.safetensors"
-    n_bytes: int
+    n_bytes: int  # bytes ON DISK (compressed) — what a step reads per block
     sha256: str | None = None
+    # Bytes once materialised in the compute dtype — what a GPU slot or a
+    # permanently resident block costs. Equals n_bytes for compression=None;
+    # None in manifests written before M4.
+    load_bytes: int | None = None
+
+    @property
+    def materialized_bytes(self) -> int:
+        return self.n_bytes if self.load_bytes is None else self.load_bytes
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,7 @@ class Manifest:
     # Wan 2.2: {"high_noise": [block indices], "low_noise": [...]} with a
     # per-timestep switching rule; None for dense models.
     expert_groups: dict[str, list[int]] | None = None
+    resident_load_bytes: int | None = None
     manifest_version: int = MANIFEST_VERSION
 
     def save(self, cache_dir: Path) -> None:
@@ -66,6 +75,26 @@ class Manifest:
 
     def shard_files(self) -> tuple[str, ...]:
         return tuple(b.file for b in self.blocks) + (self.resident_file,)
+
+    @property
+    def resident_materialized_bytes(self) -> int:
+        return self.resident_bytes if self.resident_load_bytes is None else self.resident_load_bytes
+
+    def disk_bytes(self) -> int:
+        """Bytes read per denoise step if every block streams from disk."""
+        return sum(b.n_bytes for b in self.blocks)
+
+    def torch_compute_dtype(self) -> object:
+        """`compute_dtype` as a torch dtype. Raises for 'source' (unknown)."""
+        import torch
+
+        dtype = getattr(torch, self.compute_dtype, None)
+        if not isinstance(dtype, torch.dtype):
+            raise ValueError(
+                f"Manifest compute_dtype={self.compute_dtype!r} is not a torch dtype; "
+                f"a compressed shard cache must be split with an explicit compute dtype."
+            )
+        return dtype
 
     def is_complete(self, cache_dir: Path) -> bool:
         """True iff every shard file and its .done marker exist."""

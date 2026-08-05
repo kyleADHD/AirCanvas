@@ -67,11 +67,31 @@ def _discover_block_lists(
 
 class ModelAdapter:
     """Base adapter. Subclasses set `key`, `model_classes`, and (optionally)
-    `expected_block_lists` to pin execution order and validate structure."""
+    `expected_block_lists` to pin execution order and validate structure.
+
+    M4 adds the two runtime-facing answers from ARCHITECTURE.md §3.4:
+    `encode_prompt_outputs` (question 2, component strategy — how a stock
+    pipeline's `encode_prompt` return tuple maps onto its `__call__` kwargs, so
+    the orchestrator can run text encoders once and evict them) and
+    `token_count` (question 4, workload model — latent tokens as a function of
+    resolution, which drives the budget solver's activation reserve).
+    """
 
     key: str = "generic"
     model_classes: tuple[str, ...] = ()
     expected_block_lists: tuple[str, ...] | None = None
+
+    #: Positional names of what `pipeline.encode_prompt(...)` returns. The
+    #: orchestrator zips these onto the outputs and keeps whichever the
+    #: pipeline's `__call__` actually accepts (FLUX's `text_ids`, for example,
+    #: is recomputed internally and must be dropped).
+    encode_prompt_outputs: tuple[str, ...] = ("prompt_embeds", "pooled_prompt_embeds")
+    #: Text tokens added to the image token count (0 = unknown/none).
+    text_tokens: int = 0
+    #: Guidance-distilled models do not double the batch for CFG.
+    guidance_distilled: bool = False
+    #: Latent downscale per spatial axis: VAE stride x patch size.
+    latent_stride: int = 16
 
     def block_plan(self, tensor_names: Sequence[str]) -> BlockPlan:
         discovered = _discover_block_lists(tensor_names, frozenset(self.expected_block_lists or ()))
@@ -116,8 +136,14 @@ class ModelAdapter:
         )
 
     def token_count(self, width: int, height: int, frames: int = 1) -> int:
-        """Latent token count for activation estimation (M4)."""
-        raise NotImplementedError("M4")
+        """Latent token count for the budget solver's activation estimate.
+
+        Generic model: (H / stride) x (W / stride) x frames image tokens plus
+        the family's fixed text-token budget. Video adapters override for
+        temporal compression (Wan: frames//4 + 1).
+        """
+        spatial = max(1, height // self.latent_stride) * max(1, width // self.latent_stride)
+        return spatial * max(1, frames) + self.text_tokens
 
 
 class GenericAdapter(ModelAdapter):

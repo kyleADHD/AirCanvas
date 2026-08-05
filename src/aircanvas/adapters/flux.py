@@ -21,3 +21,8 @@ class FluxAdapter(ModelAdapter):
     key = "flux"
     model_classes = ("FluxTransformer2DModel",)
     expected_block_lists = ("transformer_blocks", "single_transformer_blocks")
+    # FluxPipeline.encode_prompt -> (prompt_embeds, pooled_prompt_embeds, text_ids);
+    # text_ids is rebuilt inside __call__ and is not an accepted kwarg.
+    encode_prompt_outputs = ("prompt_embeds", "pooled_prompt_embeds", "text_ids")
+    text_tokens = 512  # T5 max_sequence_length default
+    guidance_distilled = True
