@@ -19,14 +19,29 @@ Each milestone has a demoable outcome and acceptance criteria. Numbers reference
 - Pinned ring, IO thread pool, CUDA copy stream + events, lookahead K.
 - `pipe.report()` timing breakdown (io / h2d / dequant / compute).
 
-## M4 — Phase-aware AirPipeline + fp8 shards (done when: **FLUX.1-dev ≤ 90 s/image on 6 GB VRAM + 8 GB RAM** — the headline image demo)
-- TE load-run-evict, embedding cache, VAE tiling passthrough.
-- fp8 shard storage + upcast-on-load (skip norms/modulation); quant-tolerance tests.
-- Budget solver v1 (waterfall policy) + `aircanvas doctor`.
+## M4 — Phase-aware AirPipeline + fp8 shards (**mechanism complete**; headline demo pending a FLUX download)
+- TE load-run-evict, embedding cache, VAE tiling passthrough. ✅
+- fp8 shard storage + upcast-on-load (skip norms/modulation); quant-tolerance tests. ✅
+- Budget solver v1 (waterfall policy) + `aircanvas doctor` + `pipe.report()`. ✅
+- Verified end-to-end on `hf-internal-testing/tiny-flux-pipe` (`pytest -m network`): split-on-first-use → TE encode+evict → streamed DiT denoise → VAE decode → image.
+- **Not yet verified: the acceptance number itself** (FLUX.1-dev ≤ 90 s/image on 6 GB). FLUX.1-dev is a gated ~34 GB download and FLUX.1-schnell is ~33 GB against 57 GB free on the dev box (checkpoint + shard cache would not fit comfortably). Carried into M5 as the first verification task — see below.
+
+Synthetic benchmark on the dev box (RTX 4050 6 GB, 24×2048 blocks, bf16, `benchmarks/bench_stream.py --compression both --resident 6`), which is IO-bound like a real image DiT:
+
+| configuration | ms/step | vs full-VRAM |
+|---|---|---|
+| full-VRAM reference | 104–114 | 1.0× |
+| bf16 shards, prefetched | 296–310 | ~2.8× |
+| bf16 shards, prefetched + 6 resident | 228–231 | ~2.1× |
+| **fp8 shards, prefetched** | **150–172** | **~1.5×** |
+| fp8 shards, prefetched + 6 resident | 155–207 | ~1.7× |
+
+fp8 halves disk traffic and roughly halves step time on this workload. Resident blocks buy ~25% while IO-bound (bf16) and nothing once fp8 has pushed the workload toward compute-bound — which is the budget solver working as designed, not a regression.
 
 ## M5 — Qwen-Image 20B (done when: **Qwen-Image ≤ 4 min/image on 6–8 GB VRAM** — a model that cannot run on this hardware any other way)
+- **First: close out M4's acceptance number on a real FLUX** — free ~40 GB (or use an external drive for `shard_cache=`), split FLUX.1-schnell or -dev, and measure s/image on 6 GB. Everything it needs is already implemented; only disk space is missing.
 - `qwen_image` adapter (60 uniform blocks), Qwen2.5-VL TE strategy (group-offload or CPU).
-- NF4 shard option (bitsandbytes).
+- NF4 shard option (bitsandbytes) — `quant.py` already routes `nf4` to a clear NotImplementedError and the manifest/prefetch plumbing is scheme-agnostic.
 
 ## M6 — Video: Wan 2.1 (done when: **Wan 14B 480p×81f on 6 GB VRAM, step time ≤ 110% of full-VRAM**)
 - `wan` adapter; UMT5 evict strategy; **tiled Wan-VAE decode** (missing upstream — our contribution).

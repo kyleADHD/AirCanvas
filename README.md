@@ -16,6 +16,21 @@ pipe = AirPipeline.from_pretrained(
     compression="fp8",
 )
 image = pipe("a watercolor fox reading a newspaper", num_inference_steps=30).images[0]
+print(pipe.report())  # per-phase time, block IO breakdown, and the memory plan used
+```
+
+Not sure what your machine can handle?
+
+```
+$ aircanvas doctor
+device        cuda  NVIDIA GeForce RTX 4050 Laptop GPU
+VRAM          5.32 GB free / 6.44 GB total
+RAM           2.63 GB free / 16.87 GB total
+
+model                      blocks  DiT bf16  fp8 shards           no compression
+FLUX.1-dev                     57     23.8G  yes (~3 min IO)      yes (~5 min IO)
+Qwen-Image                     60     41.0G  yes (~10 min IO)     yes (~16 min IO)
+...
 ```
 
 ## Planned model support
@@ -31,7 +46,17 @@ image = pipe("a watercolor fox reading a newspaper", num_inference_steps=30).ima
 
 ## Status
 
-🚧 **Pre-alpha — design phase complete, implementation starting.** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md), and the research behind the design in [docs/RESEARCH.md](docs/RESEARCH.md).
+🚧 **Pre-alpha.** The full path works end to end — splitter, fp8 shard cache, prefetched streaming engine, budget solver, and the phase-aware `AirPipeline` — and is exercised against a real (tiny) diffusers pipeline in CI. What is *not* yet done is running it on a flagship model: the numbers in the table above are targets derived from [docs/RESEARCH.md](docs/RESEARCH.md), not measurements. Adapters beyond FLUX land in M5–M8.
+
+Measured so far on an RTX 4050 (6 GB), synthetic 24×2048 bf16 DiT, IO-bound like a real image model:
+
+| | ms/step | vs full-VRAM |
+|---|---|---|
+| full-VRAM reference | 104–114 | 1.0× |
+| bf16 shards, streamed | 296–310 | ~2.8× |
+| **fp8 shards, streamed** | **150–172** | **~1.5×** |
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROADMAP.md](docs/ROADMAP.md), and the research behind the design in [docs/RESEARCH.md](docs/RESEARCH.md).
 
 ## License
 

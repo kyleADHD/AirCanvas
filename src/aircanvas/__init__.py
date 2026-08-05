@@ -6,7 +6,8 @@ denoise loop. See docs/ARCHITECTURE.md for the full design.
 
 __version__ = "0.0.1"
 
-__all__ = ["__version__"]
+# Imported after __version__ so the splitter's `from aircanvas import __version__`
+# resolves while this module is still initialising.
+from aircanvas.api import AirPipeline  # noqa: E402
 
-# Public API (exported once implemented, M4):
-# from aircanvas.api import AirPipeline
+__all__ = ["AirPipeline", "__version__"]

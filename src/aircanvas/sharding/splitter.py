@@ -9,8 +9,17 @@ Resumable: each written shard is temp-file -> os.replace -> `.done` marker;
 re-running skips ready shards and repairs missing ones. manifest.json is
 written last.
 
-M1 supports `compression=None` (dtype-cast passthrough). fp8 lands in M4,
-nf4 in M5 (quant.py).
+`compression=None` is a dtype-cast passthrough (M1); `compression="fp8"` stores
+float8_e4m3fn payloads plus per-tensor scales (M4, see quant.py); "nf4" lands
+in M5. Compressed shards are written largest-element-size-first and the result
+is verified with the *reader's* own header parser (`ShardHeader.aligned`)
+before the `.done` marker goes down — a misaligned shard would be rejected at
+runtime by the prefetcher, and that is far better caught at split time.
+
+The resident shard (embedders, final norm/proj, modulation tables) is always
+stored uncompressed: it is loaded once and stays on the GPU, so compressing it
+buys no per-step disk traffic (ADR #2's entire rationale) while risking the
+most quality-sensitive tensors in the model.
 """
 
 from __future__ import annotations
@@ -19,7 +28,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 from pathlib import Path
 
@@ -29,8 +37,13 @@ from safetensors.torch import save_file
 
 from aircanvas import __version__
 from aircanvas.adapters import BlockPlan, ModelAdapter, resolve
-from aircanvas.config import Compression
+from aircanvas.config import Compression, cache_root, safe_slug
+from aircanvas.sharding import quant
 from aircanvas.sharding.manifest import DONE_SUFFIX, MANIFEST_NAME, BlockShard, Manifest
+
+# The writer validates its own output with the reader's parser (no cycle:
+# prefetch imports only config + manifest).
+from aircanvas.streaming.prefetch import ShardHeader
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +54,10 @@ class NotEnoughSpaceError(RuntimeError):
     """Raised by the preflight check before any shard is written."""
 
 
+class MisalignedShardError(RuntimeError):
+    """A written shard would be rejected by the prefetcher's zero-copy views."""
+
+
 def shard_cache_dir(
     source: str,
     subfolder: str = "transformer",
@@ -49,10 +66,8 @@ def shard_cache_dir(
 ) -> Path:
     """Default persistent cache location. Deliberately under the HF cache home
     (never the repo/OneDrive — CLAUDE.md hard rule)."""
-    hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-    safe_id = re.sub(r"[^\w.\-]+", "--", str(source)).strip("-")
     tag = compression or (compute_dtype or "source")
-    return hf_home / "aircanvas" / safe_id / subfolder / tag
+    return cache_root() / safe_slug(source) / subfolder / tag
 
 
 def _torch_dtype(name: str | None) -> torch.dtype | None:
@@ -142,15 +157,41 @@ def _shard_ready(cache_dir: Path, fname: str) -> bool:
     return (cache_dir / fname).is_file() and (cache_dir / (fname + DONE_SUFFIX)).is_file()
 
 
+def _materialized_bytes(tensors: dict[str, torch.Tensor]) -> int:
+    """Bytes these (already compute-dtype) tensors occupy once bound on GPU."""
+    return sum(t.numel() * t.element_size() for t in tensors.values())
+
+
+def _materialized_bytes_of_file(path: Path, compute_dtype: torch.dtype) -> int:
+    """Same, recovered from an existing shard (resume path, no manifest yet)."""
+    header = ShardHeader.parse(path)
+    total = 0
+    for m in header.tensors:
+        if quant.is_scale_key(m.name):
+            continue
+        itemsize = quant.compressed_dtype(m.dtype, compute_dtype).itemsize
+        total += itemsize * torch.Size(m.shape).numel()
+    return total
+
+
 def _write_shard(
     cache_dir: Path,
     fname: str,
     tensors: dict[str, torch.Tensor],
     metadata: dict[str, str],
     hash_shards: bool,
+    *,
+    verify_alignment: bool = False,
 ) -> tuple[int, str | None]:
+    ordered = quant.order_for_alignment({k: v.contiguous() for k, v in tensors.items()})
     tmp = cache_dir / (fname + ".tmp")
-    save_file({k: v.contiguous() for k, v in tensors.items()}, str(tmp), metadata=metadata)
+    save_file(ordered, str(tmp), metadata=metadata)
+    if verify_alignment and not ShardHeader.parse(tmp).aligned:
+        tmp.unlink(missing_ok=True)
+        raise MisalignedShardError(
+            f"{fname}: mixed-dtype layout left a tensor on an unaligned byte offset — "
+            f"the prefetcher would refuse this shard. This is an AirCanvas bug."
+        )
     final = cache_dir / fname
     os.replace(tmp, final)
     (cache_dir / (fname + DONE_SUFFIX)).touch()
@@ -179,10 +220,20 @@ def split_model(
     hf_token: str | None = None,
 ) -> Manifest:
     """Find-or-create the shard cache for `source`; return its manifest."""
-    if compression is not None:
-        raise NotImplementedError("compression='fp8' lands in M4, 'nf4' in M5 (see ROADMAP.md)")
     dtype = _torch_dtype(compute_dtype)
-    dtype_tag = compute_dtype if dtype is not None else "source"
+    # `_torch_dtype` maps None/"none"/"source" to None, so a real dtype here
+    # implies `compute_dtype` was a real name.
+    dtype_tag: str = "source" if dtype is None else str(compute_dtype)
+    if compression is not None:
+        if compression == "nf4":
+            raise NotImplementedError("compression='nf4' lands in M5 (see docs/ROADMAP.md)")
+        if compression != "fp8":
+            raise ValueError(f"Unknown compression {compression!r} (expected 'fp8', 'nf4', None)")
+        if dtype is None:
+            raise ValueError(
+                "compression='fp8' needs an explicit compute_dtype (e.g. 'bfloat16'): the "
+                "upcast target must be recorded in the manifest."
+            )
 
     cache_dir = cache_dir or shard_cache_dir(source, subfolder, compression, dtype_tag)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -219,25 +270,52 @@ def split_model(
         cache_dir,
     )
 
-    meta_common = {"aircanvas": __version__, "source": str(source)}
+    meta_common = {
+        "aircanvas": __version__,
+        "source": str(source),
+        "compression": compression or "none",
+        "compute_dtype": dtype_tag,
+    }
     blocks: list[BlockShard] = []
     for i, block in enumerate(plan.block_names):
         fname = f"block_{i:04d}.safetensors"
         if _shard_ready(cache_dir, fname):
-            n_bytes = (cache_dir / fname).stat().st_size
-            blocks.append(BlockShard(name=block, file=fname, n_bytes=n_bytes))
+            path = cache_dir / fname
+            blocks.append(
+                BlockShard(
+                    name=block,
+                    file=fname,
+                    n_bytes=path.stat().st_size,
+                    load_bytes=(
+                        _materialized_bytes_of_file(path, dtype) if dtype is not None else None
+                    ),
+                )
+            )
             continue
         tensors = _gather(src_dir, weight_map, plan.tensors_by_block[block], dtype)
+        load_bytes = _materialized_bytes(tensors)
         n_bytes, digest = _write_shard(
-            cache_dir, fname, tensors, {**meta_common, "block": block}, hash_shards
+            cache_dir,
+            fname,
+            quant.compress_state_dict(tensors, compression),
+            {**meta_common, "block": block},
+            hash_shards,
+            verify_alignment=compression is not None,
         )
-        blocks.append(BlockShard(name=block, file=fname, n_bytes=n_bytes, sha256=digest))
+        blocks.append(
+            BlockShard(
+                name=block, file=fname, n_bytes=n_bytes, sha256=digest, load_bytes=load_bytes
+            )
+        )
 
+    # The resident shard is never compressed (see module docstring).
     resident_fname = "resident.safetensors"
     if _shard_ready(cache_dir, resident_fname):
         resident_bytes = (cache_dir / resident_fname).stat().st_size
+        resident_load_bytes = None
     else:
         tensors = _gather(src_dir, weight_map, plan.resident_tensors, dtype)
+        resident_load_bytes = _materialized_bytes(tensors)
         resident_bytes, _ = _write_shard(
             cache_dir, resident_fname, tensors, {**meta_common, "block": "resident"}, hash_shards
         )
@@ -253,7 +331,18 @@ def split_model(
         blocks=tuple(blocks),
         resident_file=resident_fname,
         resident_bytes=resident_bytes,
+        resident_load_bytes=resident_load_bytes,
     )
     manifest.save(cache_dir)
-    logger.info("Split complete: %d blocks + resident at %s", len(blocks), cache_dir)
+    disk = manifest.disk_bytes()
+    load = sum(b.materialized_bytes for b in blocks)
+    logger.info(
+        "Split complete: %d blocks (%.2f GB on disk / %.2f GB materialised) + %.2f GB resident "
+        "at %s",
+        len(blocks),
+        disk / 1e9,
+        load / 1e9,
+        resident_bytes / 1e9,
+        cache_dir,
+    )
     return manifest

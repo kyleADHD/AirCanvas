@@ -66,7 +66,7 @@ Factual grounding for every number here: [RESEARCH.md](RESEARCH.md).
 - Only the **DiT** is sharded. Text encoders and VAE keep their stock single-file form (they use cheaper strategies).
 
 **`quant.py`** — compression applied at split time, recorded in the manifest:
-- `fp8` (default): `float8_e4m3fn` storage, upcast to compute dtype on GPU at load. 2× traffic cut, no extra deps, matches diffusers layerwise-casting semantics. Skip list: norms, modulation/AdaLN, embeddings (tiny + sensitive).
+- `fp8` (default): `float8_e4m3fn` payload + a per-tensor fp32 scale (`<name>.__ac_scale`), upcast to compute dtype on GPU at load. No extra deps. Skip list: norms, modulation/AdaLN, embeddings (tiny + sensitive), plus every 1-D parameter. **The real traffic cut is ~1.5–2×, not a clean 2×**: on FLUX-style blocks the skipped `norm1.linear` modulation projection alone is a third of the bytes. Mixed-dtype shards are written largest-element-size-first so every offset stays aligned to its element size — otherwise `prefetch.ShardHeader` refuses the shard (the splitter verifies this with the reader's own parser before writing `.done`).
 - `nf4`: bitsandbytes `quantize_nf4` at split, `dequantize_nf4` on GPU at load (AirLLM's exact recipe — quant state stored as sibling tensors). 4× traffic cut.
 - `none`: bf16 passthrough.
 
@@ -107,6 +107,8 @@ Factual grounding for every number here: [RESEARCH.md](RESEARCH.md).
 - Inputs: free VRAM, free RAM, measured disk read bandwidth (probed once, cached), manifest (block sizes), workload (steps, resolution → activation estimate).
 - Outputs: number of permanently GPU-resident blocks R (fill spare VRAM), pinned-RAM shard-cache size (promote most-recently-used shards; with enough RAM the whole model lives in RAM and disk is only touched on first step), ring depth, warnings ("SATA SSD detected: expect ~40% overhead", "distilled 4-step model: streaming overhead will be visible; prefer ram cache").
 - Policy is a simple waterfall, not an ILP: activations + slot pool reserved first; leftover VRAM → resident blocks; leftover RAM → shard cache.
+- Resident blocks are taken from the **front** of the manifest. Any subset would do (every block runs once per step), but the front is deterministic and, on two-species models, happens to be the big blocks — so pinning them also shrinks the pool the streamed tail needs.
+- **Status:** R, ring depth and the slot pool are live as of M4. `ram_cache_bytes` is *sized and reported* but the pinned-RAM tier that would consume it is M8; `ResidencyPlan.describe()` labels it as planned-not-active so a report never overstates what ran.
 
 ### 3.3 Runtime orchestration (`aircanvas.runtime`)
 
@@ -196,3 +198,13 @@ Baselines to beat (from research): diffusers disk group-offload = 11.7 GB VRAM /
 | 5 | GPU slot pool, no per-block alloc | Windows + allocator churn; AirLLM's gc-per-layer is measured overhead | AirLLM-style to('meta') + empty_cache each block |
 | 6 | Wrap stock pipelines, own only placement | Schedulers/samplers/prompting are solved problems; smaller surface | Custom pipeline reimplementations |
 | 7 | Deterministic recorded schedule for prefetch | Denoise loop is identical every step — perfect prediction | Reactive prefetch (next-module guessing) |
+| 8 | fp8 upcast writes into a **second pre-allocated pool**, not the caching allocator | The no-allocation-in-the-hot-loop rule stays absolute and the VRAM cost stays a number we can put in the plan. Compressed staging slots are released as soon as the upcast is *enqueued* (CUDA stream ordering makes that safe), so 2 suffice and the extra cost is `2 x compressed`, not `gpu_slots x compressed` | `payload.to(compute_dtype)` per block, relying on the allocator's steady-state block reuse — same VRAM in practice, but non-deterministic, fragmentation-prone, and a documented exception to a rule that is more valuable un-excepted |
+| 9 | Per-tensor fp8 **scale**, not a bare cast | `float8_e4m3fn` denormalises below 2^-6 (0.0156) and DiT weight matrices routinely have amax under that, so an unscaled cast throws away most of the mantissa exactly where it matters. Scaling amax to 448 keeps every value in the normal range, where error is a flat 2^-4 relative half-ulp. Costs one fp32 scalar per tensor and one `mul_` | Scale-free cast (diffusers layerwise-casting semantics) — simpler, but the error becomes a function of a tensor's absolute magnitude |
+| 10 | Resident (non-block) shard is never compressed | It is read once and then lives on the GPU forever, so compressing it cuts zero per-step disk traffic (ADR #2's whole rationale) while putting embedders and final projections — the most quality-sensitive tensors in the model — through a lossy codec | Uniform compression of every shard |
+| 11 | Pin `_execution_device` via a throwaway pipeline subclass | diffusers derives its device from the first component that has one; our DiT is on `meta` and TEs/VAE are parked on the CPU between phases, so the derivation yields "cpu" and the run silently falls off the GPU. The property is read-only, so an instance attribute cannot shadow it. AirLLM patches `.device` for the same reason (RESEARCH.md §1) | Keeping a dummy module resident on the GPU to bias the derivation (fragile, wastes VRAM); forking diffusers |
+| 12 | Budget re-solved per call from height/width/steps | Resolution and step count are solver inputs (§3.2) and are only known at call time — a plan sized for 512² will OOM at 1024². Free VRAM is re-read too, since whatever else is on the card is not ours to spend | One plan fixed at `from_pretrained` (what `workload=` opts into when a caller wants determinism) |
+
+Two solver details worth recording because they look like bugs otherwise:
+
+- **The resident-block scan is exhaustive, not early-exit.** Total VRAM is *not* monotonic in the resident count R: for two-species models (FLUX's 19 big blocks then 38 small ones) pinning the front blocks *shrinks* the slot pool, so a scan that stopped at the first miss would wrongly report R=0.
+- **On a CPU run the "device" budget is system RAM**, and the slot pool is subtracted from the RAM waterfall rather than counted twice. CPU is the correctness path, not the fast path.
