@@ -35,11 +35,17 @@ def make_flux_like_tensors() -> dict[str, torch.Tensor]:
     return tensors
 
 
-def write_checkpoint(root: Path, tensors: dict[str, torch.Tensor], *, sharded: bool) -> Path:
+def write_checkpoint(
+    root: Path,
+    tensors: dict[str, torch.Tensor],
+    *,
+    sharded: bool,
+    class_name: str = "FluxTransformer2DModel",
+) -> Path:
     """Write a diffusers-style transformer/ dir: config.json + weights."""
     src = root / "transformer"
     src.mkdir(parents=True)
-    (src / "config.json").write_text(json.dumps({"_class_name": "FluxTransformer2DModel"}))
+    (src / "config.json").write_text(json.dumps({"_class_name": class_name}))
     if not sharded:
         save_file(tensors, str(src / "diffusion_pytorch_model.safetensors"))
         return root
@@ -56,6 +62,33 @@ def write_checkpoint(root: Path, tensors: dict[str, torch.Tensor], *, sharded: b
     index = {"metadata": {}, "weight_map": weight_map}
     (src / "diffusion_pytorch_model.safetensors.index.json").write_text(json.dumps(index))
     return root
+
+
+class ToyBlock(torch.nn.Module):
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.lin1 = torch.nn.Linear(dim, dim, bias=False)
+        self.lin2 = torch.nn.Linear(dim, dim, bias=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.lin2(torch.tanh(self.lin1(x)))
+
+
+class ToyDiT(torch.nn.Module):
+    """Runnable stand-in for a DiT: resident embed/proj + a streamable
+    `blocks` ModuleList (generic-adapter shaped)."""
+
+    def __init__(self, dim: int = 8, n_blocks: int = 6) -> None:
+        super().__init__()
+        self.x_embedder = torch.nn.Linear(dim, dim, bias=False)
+        self.blocks = torch.nn.ModuleList(ToyBlock(dim) for _ in range(n_blocks))
+        self.proj_out = torch.nn.Linear(dim, dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.x_embedder(x)
+        for block in self.blocks:
+            x = block(x)
+        return self.proj_out(x)
 
 
 @pytest.fixture()

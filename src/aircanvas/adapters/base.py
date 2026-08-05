@@ -74,9 +74,7 @@ class ModelAdapter:
     expected_block_lists: tuple[str, ...] | None = None
 
     def block_plan(self, tensor_names: Sequence[str]) -> BlockPlan:
-        discovered = _discover_block_lists(
-            tensor_names, frozenset(self.expected_block_lists or ())
-        )
+        discovered = _discover_block_lists(tensor_names, frozenset(self.expected_block_lists or ()))
         if not discovered:
             raise AdapterError(
                 "No streamable block lists found (need a '<name>.<i>.' ModuleList "
