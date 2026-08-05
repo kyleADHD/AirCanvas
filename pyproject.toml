@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aircanvas"
+version = "0.0.1"
+description = "Run 20B+ image & video diffusion models on 4-8 GB GPUs by streaming quantized model blocks from disk."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Kyle Hulley" }]
+keywords = ["diffusion", "flux", "wan", "video-generation", "low-vram", "offloading", "airllm"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.4",
+    "diffusers>=0.35",
+    "transformers>=4.49",
+    "safetensors>=0.4",
+    "accelerate>=1.0",
+    "huggingface-hub>=0.30",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+nf4 = ["bitsandbytes>=0.45"]
+video = ["imageio[ffmpeg]"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[project.scripts]
+aircanvas = "aircanvas.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/kylehulley/aircanvas"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aircanvas"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: tests requiring a CUDA GPU (deselected in CI; run with -m gpu)",
+]
+addopts = "-m 'not gpu'"

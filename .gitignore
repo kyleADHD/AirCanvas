@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# AirCanvas artifacts — shards NEVER belong in the repo (or OneDrive)
+*.safetensors
+*.done
+shard_cache/
+benchmarks/results/local/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
