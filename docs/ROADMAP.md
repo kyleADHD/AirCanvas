@@ -38,10 +38,10 @@ Synthetic benchmark on the dev box (RTX 4050 6 GB, 24×2048 blocks, bf16, `bench
 
 fp8 halves disk traffic and roughly halves step time on this workload. Resident blocks buy ~25% while IO-bound (bf16) and nothing once fp8 has pushed the workload toward compute-bound — which is the budget solver working as designed, not a regression.
 
-## M5 — Qwen-Image 20B (done when: **Qwen-Image ≤ 4 min/image on 6–8 GB VRAM** — a model that cannot run on this hardware any other way)
-- **First: close out M4's acceptance number on a real FLUX** — free ~40 GB (or use an external drive for `shard_cache=`), split FLUX.1-schnell or -dev, and measure s/image on 6 GB. Everything it needs is already implemented; only disk space is missing.
-- `qwen_image` adapter (60 uniform blocks), Qwen2.5-VL TE strategy (group-offload or CPU).
-- NF4 shard option (bitsandbytes) — `quant.py` already routes `nf4` to a clear NotImplementedError and the manifest/prefetch plumbing is scheme-agnostic.
+## M5 — Qwen-Image 20B (**code complete**; done when: **Qwen-Image ≤ 4 min/image on 6–8 GB VRAM** — a model that cannot run on this hardware any other way)
+- `qwen_image` adapter (60 uniform blocks, validated against the live checkpoint index; `encode_prompt_outputs=(prompt_embeds, prompt_embeds_mask)`). ✅
+- NF4 shard option (bitsandbytes 0.50): packed 4-bit payload + absmax sibling + original shape in shard `__metadata__`; QuantState rebuilt at load (code table reproduced, not stored); dequant via bnb kernel straight into the pre-allocated second pool (`out=`, ADR #8 holds). CUDA-only at split AND load, enforced with clear errors. Streamed output verified **bitwise-identical** to allocating dequantization across sync and prefetch paths. ✅
+- **Not yet verified: both acceptance numbers** (real FLUX ≤ 90 s and real Qwen-Image ≤ 4 min). FLUX needs ~40 GB free disk; Qwen-Image (~41 GB DiT + ~16.6 GB TE) needs ~60 GB+ or an external drive for `shard_cache=`. All code exists; this is a disk-space errand.
 
 ## M6 — Video: Wan 2.1 (done when: **Wan 14B 480p×81f on 6 GB VRAM, step time ≤ 110% of full-VRAM**)
 - `wan` adapter; UMT5 evict strategy; **tiled Wan-VAE decode** (missing upstream — our contribution).

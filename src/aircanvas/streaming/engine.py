@@ -53,6 +53,7 @@ from aircanvas.streaming.prefetch import (
     PrefetchError,
     PrefetchMismatch,
     ReadyItem,
+    ShardHeader,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,11 @@ class StreamingEngine:
             dtype = manifest.torch_compute_dtype()
             assert isinstance(dtype, torch.dtype)
             self._compute_dtype = dtype
+        if manifest.compression == "nf4" and self.device.type != "cuda":
+            raise StreamingError(
+                "compression='nf4' requires a CUDA device (bitsandbytes dequantizes on GPU); "
+                "re-split with compression='fp8' or None for CPU use"
+            )
 
         self.stats: dict[str, float] = {
             "block_loads": 0,
@@ -206,8 +212,12 @@ class StreamingEngine:
         if self.manifest.compression is None:
             return raw
         assert self._compute_dtype is not None
+        metadata = ShardHeader.parse(path).metadata if self.manifest.compression == "nf4" else None
         return quant.decompress_state_dict(
-            raw, compression=self.manifest.compression, compute_dtype=self._compute_dtype
+            raw,
+            compression=self.manifest.compression,
+            compute_dtype=self._compute_dtype,
+            metadata=metadata,
         )
 
     def _load_resident(self) -> None:

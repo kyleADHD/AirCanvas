@@ -54,8 +54,17 @@ def test_qwen_plan_uniform_blocks() -> None:
 
 
 def test_qwen_token_count() -> None:
-    assert QwenImageAdapter().token_count(1024, 1024) == 4096
-    assert QwenImageAdapter().token_count(2048, 1024) == 8192
+    # image tokens (H/16 * W/16) + the VLM text-token budget (1024)
+    assert QwenImageAdapter().token_count(1024, 1024) == 4096 + 1024
+    assert QwenImageAdapter().token_count(2048, 1024) == 8192 + 1024
+
+
+def test_qwen_component_facts() -> None:
+    # QwenImagePipeline.encode_prompt returns (prompt_embeds, prompt_embeds_mask)
+    # — NOT flux's (prompt_embeds, pooled_prompt_embeds); see diffusers source.
+    adapter = QwenImageAdapter()
+    assert adapter.encode_prompt_outputs == ("prompt_embeds", "prompt_embeds_mask")
+    assert not adapter.guidance_distilled
 
 
 def test_qwen_like_checkpoint_splits(tmp_path) -> None:

@@ -96,11 +96,19 @@ class _TensorMeta:
 class ShardHeader:
     """Parsed safetensors header: offsets for zero-copy views into a raw blob."""
 
-    def __init__(self, path: Path, data_start: int, blob_size: int, tensors: list[_TensorMeta]):
+    def __init__(
+        self,
+        path: Path,
+        data_start: int,
+        blob_size: int,
+        tensors: list[_TensorMeta],
+        metadata: dict[str, str] | None = None,
+    ):
         self.path = path
         self.data_start = data_start
         self.blob_size = blob_size
         self.tensors = tensors
+        self.metadata: dict[str, str] = metadata or {}
         # Views require each tensor's byte offset to be aligned to its element
         # size. True for uniform-dtype shards (2/4-byte floats) and for the
         # mixed-dtype shards the splitter writes, which are ordered largest
@@ -125,7 +133,7 @@ class ShardHeader:
                 raise PrefetchError(f"{path.name}: unsupported dtype {meta['dtype']!r}")
             start, end = meta["data_offsets"]
             tensors.append(_TensorMeta(name, dtype, tuple(meta["shape"]), start, end))
-        return cls(path, data_start, blob_size, tensors)
+        return cls(path, data_start, blob_size, tensors, header.get("__metadata__"))
 
     def read_blob_into(self, buf: torch.Tensor) -> None:
         """Fill `buf[:blob_size]` (uint8, CPU) with the shard's data blob."""
@@ -160,6 +168,8 @@ class _Move:
     dst_end: int
     scale_start: int = -1  # byte range of the fp32 scale in the raw blob, -1 if none
     scale_end: int = -1
+    absmax_start: int = -1  # byte range of the nf4 fp32 absmax, -1 if not nf4
+    absmax_end: int = -1
 
 
 class DecompressPlan:
@@ -180,20 +190,27 @@ class DecompressPlan:
         scales = {
             quant.payload_name(m.name): m for m in header.tensors if quant.is_scale_key(m.name)
         }
+        absmaxes = {
+            m.name[: -len(quant.NF4_ABSMAX_SUFFIX)]: m
+            for m in header.tensors
+            if quant.is_nf4_absmax_key(m.name)
+        }
         moves: list[_Move] = []
         offset = 0
         for m in header.tensors:
-            if quant.is_scale_key(m.name):
+            spec = quant.out_spec(m.name, m.dtype, m.shape, header.metadata, compute_dtype)
+            if spec is None:  # quant-state sibling — consumed by its payload's move
                 continue
-            out_dtype = quant.compressed_dtype(m.dtype, compute_dtype)
+            out_dtype, out_shape = spec
             itemsize = out_dtype.itemsize
             offset += (-offset) % itemsize  # keep every destination view alignable
-            n_bytes = itemsize * torch.Size(m.shape).numel()
+            n_bytes = itemsize * torch.Size(out_shape).numel()
             scale = scales.get(m.name)
+            absmax = absmaxes.get(m.name)
             moves.append(
                 _Move(
                     name=m.name,
-                    shape=m.shape,
+                    shape=out_shape,
                     src_dtype=m.dtype,
                     src_start=m.start,
                     src_end=m.end,
@@ -202,6 +219,8 @@ class DecompressPlan:
                     dst_end=offset + n_bytes,
                     scale_start=-1 if scale is None else scale.start,
                     scale_end=-1 if scale is None else scale.end,
+                    absmax_start=-1 if absmax is None else absmax.start,
+                    absmax_end=-1 if absmax is None else absmax.end,
                 )
             )
             offset += n_bytes
@@ -211,6 +230,16 @@ class DecompressPlan:
         """Materialise `src` (raw blob, uint8) into `dst` (uint8), in place."""
         for m in self.moves:
             out = dst[m.dst_start : m.dst_end].view(m.out_dtype).reshape(m.shape)
+            if m.absmax_start >= 0:
+                # nf4: bnb kernel writes straight into the destination view.
+                quant.nf4_dequantize(
+                    src[m.src_start : m.src_end],
+                    src[m.absmax_start : m.absmax_end].view(torch.float32),
+                    m.shape,
+                    m.out_dtype,
+                    out=out,
+                )
+                continue
             out.copy_(src[m.src_start : m.src_end].view(m.src_dtype).reshape(m.shape))
             if m.scale_start >= 0:
                 # 0-dim operand => type promotion keeps the in-place result in

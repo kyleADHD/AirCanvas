@@ -95,9 +95,17 @@ def test_preflight_raises_when_disk_full(flux_checkpoint, tmp_path: Path, monkey
         split_model(str(flux_checkpoint), cache_dir=tmp_path / "cache", compute_dtype=None)
 
 
-def test_nf4_not_implemented_yet(flux_checkpoint, tmp_path: Path) -> None:
-    with pytest.raises(NotImplementedError, match="M5"):
-        split_model(str(flux_checkpoint), cache_dir=tmp_path / "c", compression="nf4")
+def test_nf4_split_requires_cuda(flux_checkpoint, tmp_path: Path, monkeypatch) -> None:
+    from aircanvas.sharding.quant import QuantError
+
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    with pytest.raises(QuantError, match="requires CUDA at split"):
+        split_model(
+            str(flux_checkpoint),
+            cache_dir=tmp_path / "c",
+            compression="nf4",
+            compute_dtype="bfloat16",
+        )
 
 
 def test_unknown_compression_raises(flux_checkpoint, tmp_path: Path) -> None:
