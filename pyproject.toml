@@ -62,5 +62,6 @@ check_untyped_defs = true
 testpaths = ["tests"]
 markers = [
     "gpu: tests requiring a CUDA GPU (deselected in CI; run with -m gpu)",
+    "network: tests that download from the HF Hub (deselected by default; run with -m network)",
 ]
-addopts = "-m 'not gpu'"
+addopts = "-m 'not gpu and not network'"
