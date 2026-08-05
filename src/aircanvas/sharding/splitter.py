@@ -10,8 +10,9 @@ re-running skips ready shards and repairs missing ones. manifest.json is
 written last.
 
 `compression=None` is a dtype-cast passthrough (M1); `compression="fp8"` stores
-float8_e4m3fn payloads plus per-tensor scales (M4, see quant.py); "nf4" lands
-in M5. Compressed shards are written largest-element-size-first and the result
+float8_e4m3fn payloads plus per-tensor scales (M4, see quant.py); "nf4" stores
+bitsandbytes-packed 4-bit payloads plus absmax siblings and needs CUDA at split
+AND load time (M5). Compressed shards are written largest-element-size-first and the result
 is verified with the *reader's* own header parser (`ShardHeader.aligned`)
 before the `.done` marker goes down — a misaligned shard would be rejected at
 runtime by the prefetcher, and that is far better caught at split time.
@@ -167,10 +168,11 @@ def _materialized_bytes_of_file(path: Path, compute_dtype: torch.dtype) -> int:
     header = ShardHeader.parse(path)
     total = 0
     for m in header.tensors:
-        if quant.is_scale_key(m.name):
+        spec = quant.out_spec(m.name, m.dtype, m.shape, header.metadata, compute_dtype)
+        if spec is None:
             continue
-        itemsize = quant.compressed_dtype(m.dtype, compute_dtype).itemsize
-        total += itemsize * torch.Size(m.shape).numel()
+        out_dtype, out_shape = spec
+        total += out_dtype.itemsize * torch.Size(out_shape).numel()
     return total
 
 
@@ -225,14 +227,16 @@ def split_model(
     # implies `compute_dtype` was a real name.
     dtype_tag: str = "source" if dtype is None else str(compute_dtype)
     if compression is not None:
-        if compression == "nf4":
-            raise NotImplementedError("compression='nf4' lands in M5 (see docs/ROADMAP.md)")
-        if compression != "fp8":
+        if compression not in ("fp8", "nf4"):
             raise ValueError(f"Unknown compression {compression!r} (expected 'fp8', 'nf4', None)")
         if dtype is None:
             raise ValueError(
-                "compression='fp8' needs an explicit compute_dtype (e.g. 'bfloat16'): the "
-                "upcast target must be recorded in the manifest."
+                f"compression={compression!r} needs an explicit compute_dtype (e.g. "
+                "'bfloat16'): the dequantization target must be recorded in the manifest."
+            )
+        if compression == "nf4" and not torch.cuda.is_available():
+            raise quant.QuantError(
+                "compression='nf4' requires CUDA at split time (bitsandbytes quantizes on GPU)"
             )
 
     cache_dir = cache_dir or shard_cache_dir(source, subfolder, compression, dtype_tag)
@@ -294,11 +298,12 @@ def split_model(
             continue
         tensors = _gather(src_dir, weight_map, plan.tensors_by_block[block], dtype)
         load_bytes = _materialized_bytes(tensors)
+        stored, quant_meta = quant.compress_state_dict(tensors, compression)
         n_bytes, digest = _write_shard(
             cache_dir,
             fname,
-            quant.compress_state_dict(tensors, compression),
-            {**meta_common, "block": block},
+            stored,
+            {**meta_common, **quant_meta, "block": block},
             hash_shards,
             verify_alignment=compression is not None,
         )
