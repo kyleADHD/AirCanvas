@@ -105,7 +105,7 @@ def main() -> None:
             ) as engine,
             torch.no_grad(),
         ):
-            times = time_steps(lambda: streamed(x), args.steps, device)
+            times = time_steps(lambda m=streamed: m(x), args.steps, device)
         steady = times[2:] if len(times) > 2 else times[-1:]
         print(
             f"{label:20s}: {statistics.mean(steady) * 1e3:8.1f} ms/step steady "
