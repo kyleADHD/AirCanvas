@@ -152,6 +152,7 @@ class Orchestrator:
         device: torch.device,
         embed_cache_dir: Path | None = None,
         prefetch: bool = True,
+        text_encoder_device: torch.device | str | None = None,
     ) -> None:
         if not hasattr(pipe, "encode_prompt"):
             raise OrchestrationError(
@@ -166,6 +167,7 @@ class Orchestrator:
         self.device = device
         self.embed_cache_dir = embed_cache_dir
         self.prefetch = prefetch
+        self.text_encoder_device = text_encoder_device
         self.stats = PhaseStats()
         self.vae_features = configure_vae(getattr(pipe, "vae", None))
         logger.info(
@@ -195,6 +197,7 @@ class Orchestrator:
             negative_prompt=negative_prompt,
             encode_kwargs=encode_kwargs,
             cache_dir=self.embed_cache_dir,
+            te_device=self.text_encoder_device,
         )
         stats.encode_s = encoded.seconds
         stats.encode_cached = encoded.cached

@@ -90,6 +90,7 @@ class AirPipeline:
         vram_budget: int | None = None,
         ram_budget: int | None = None,
         max_resident_blocks: int | None = None,
+        text_encoder_device: torch.device | str | None = None,
     ) -> None:
         self.pipeline = pipeline
         self.manifest = manifest
@@ -112,6 +113,7 @@ class AirPipeline:
             device=device,
             embed_cache_dir=embed_cache_dir,
             prefetch=prefetch,
+            text_encoder_device=text_encoder_device,
         )
 
     # -- construction ------------------------------------------------------
@@ -134,6 +136,7 @@ class AirPipeline:
         prefetch: bool = True,
         cache_embeddings: bool = True,
         hf_token: str | None = None,
+        text_encoder_device: torch.device | str | None = None,
         **pipeline_kwargs: Any,
     ) -> AirPipeline:
         """Resolve budgets, find-or-create the shard cache, build the pipeline."""
@@ -218,6 +221,7 @@ class AirPipeline:
             vram_budget=vram_bytes,
             ram_budget=ram_bytes,
             max_resident_blocks=max_resident_blocks,
+            text_encoder_device=text_encoder_device,
         )
 
     # -- use ---------------------------------------------------------------

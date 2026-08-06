@@ -95,6 +95,35 @@ def test_preflight_raises_when_disk_full(flux_checkpoint, tmp_path: Path, monkey
         split_model(str(flux_checkpoint), cache_dir=tmp_path / "cache", compute_dtype=None)
 
 
+def test_split_fast_path_survives_deleted_source(flux_checkpoint, tmp_path: Path) -> None:
+    """Split-once-delete-original: a complete cache must be reusable without
+    the source checkpoint existing (it may have been deleted to reclaim disk)."""
+    import shutil as sh
+
+    cache = tmp_path / "cache"
+    first = split_model(str(flux_checkpoint), cache_dir=cache, compute_dtype=None)
+    sh.rmtree(flux_checkpoint)
+    again = split_model(str(flux_checkpoint), cache_dir=cache, compute_dtype=None)
+    assert again == first
+
+
+def test_preflight_estimate_scales_with_compression(
+    flux_checkpoint, tmp_path: Path, monkeypatch
+) -> None:
+    from aircanvas.sharding import splitter as sp
+
+    src = Path(flux_checkpoint) / "transformer"
+    weight_map = sp._load_weight_map(src)
+    src_bytes = sum((src / f).stat().st_size for f in set(weight_map.values()))
+    usage = sp.shutil.disk_usage(tmp_path)
+    # Enough free space for a ~0.35x nf4 output, not for a 1.0x passthrough.
+    free = int(src_bytes * 0.5) + sp._PREFLIGHT_MARGIN_BYTES
+    monkeypatch.setattr(sp.shutil, "disk_usage", lambda _: usage._replace(free=free))
+    sp._preflight(tmp_path, src, weight_map, "nf4")  # fits
+    with pytest.raises(NotEnoughSpaceError):
+        sp._preflight(tmp_path, src, weight_map, None)  # does not
+
+
 def test_nf4_split_requires_cuda(flux_checkpoint, tmp_path: Path, monkeypatch) -> None:
     from aircanvas.sharding.quant import QuantError
 
