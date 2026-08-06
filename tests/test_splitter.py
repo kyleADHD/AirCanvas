@@ -95,6 +95,23 @@ def test_preflight_raises_when_disk_full(flux_checkpoint, tmp_path: Path, monkey
         split_model(str(flux_checkpoint), cache_dir=tmp_path / "cache", compute_dtype=None)
 
 
+def test_gather_ranged_fallback_matches_mmap(
+    flux_checkpoint, flux_tensors, tmp_path: Path, monkeypatch
+) -> None:
+    """When Windows refuses to mmap a big checkpoint (OSError 1455, low
+    commit), the ranged seek-read fallback must produce identical shards."""
+    from aircanvas.sharding import splitter as sp
+
+    def refuse_mmap(*args, **kwargs):
+        raise OSError(1455, "The paging file is too small for this operation to complete.")
+
+    monkeypatch.setattr(sp, "safe_open", refuse_mmap)
+    cache = tmp_path / "cache"
+    manifest = split_model(str(flux_checkpoint), cache_dir=cache, compute_dtype=None)
+    assert manifest.is_complete(cache)
+    assert_cache_matches_source(cache, manifest, flux_tensors)
+
+
 def test_split_fast_path_survives_deleted_source(flux_checkpoint, tmp_path: Path) -> None:
     """Split-once-delete-original: a complete cache must be reusable without
     the source checkpoint existing (it may have been deleted to reclaim disk)."""
