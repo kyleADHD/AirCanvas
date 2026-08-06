@@ -25,3 +25,4 @@ benchmarks/results/local/
 Thumbs.db
 .idea/
 .vscode/
+outputs/
