@@ -110,8 +110,11 @@ def _load_weight_map(src_dir: Path) -> dict[str, str]:
         return dict(data["weight_map"])  # JSON order preserved
     files = sorted(src_dir.glob("*.safetensors"))
     if len(files) == 1:
-        with safe_open(files[0], framework="pt", device="cpu") as f:
-            names = f.keys()  # not a dict — safe_open handles aren't iterable
+        try:
+            with safe_open(files[0], framework="pt", device="cpu") as f:
+                names = list(f.keys())  # not a dict — safe_open handles aren't iterable
+        except OSError:  # mmap refused (low commit) — header parse needs no mapping
+            names = [m.name for m in ShardHeader.parse(files[0]).tensors]
         return dict.fromkeys(names, files[0].name)
     if not files:
         raise FileNotFoundError(f"No .safetensors checkpoint found in {src_dir}")
@@ -129,6 +132,29 @@ def _maybe_cast(t: torch.Tensor, dtype: torch.dtype | None) -> torch.Tensor:
     return t.to(dtype)
 
 
+def _gather_ranged(
+    path: Path, names: list[str], dtype: torch.dtype | None, out: dict[str, torch.Tensor]
+) -> None:
+    """mmap-free fallback: seek/read exactly the requested tensors' byte ranges.
+
+    Windows refuses CreateFileMapping on a 10-20 GB checkpoint when system
+    commit (RAM + pagefile) is tight — OSError 1455, 'the paging file is too
+    small' — which is precisely the situation on the low-RAM machines this
+    project targets. Peak memory here is one tensor, not one mapping.
+    """
+    header = ShardHeader.parse(path)
+    metas = {m.name: m for m in header.tensors}
+    with open(path, "rb", buffering=0) as f:
+        for n in sorted(names, key=lambda n: metas[n].start):  # sequential reads
+            m = metas[n]
+            buf = bytearray(m.end - m.start)
+            f.seek(header.data_start + m.start)
+            if f.readinto(buf) != len(buf):
+                raise OSError(f"Short read for {n} in {path.name}")
+            t = torch.frombuffer(buf, dtype=torch.uint8).view(m.dtype).reshape(m.shape)
+            out[n] = _maybe_cast(t, dtype)
+
+
 def _gather(
     src_dir: Path,
     weight_map: dict[str, str],
@@ -140,9 +166,14 @@ def _gather(
         by_file.setdefault(weight_map[n], []).append(n)
     out: dict[str, torch.Tensor] = {}
     for fname, ns in by_file.items():
-        with safe_open(src_dir / fname, framework="pt", device="cpu") as f:
-            for n in ns:
-                out[n] = _maybe_cast(f.get_tensor(n), dtype)
+        path = src_dir / fname
+        try:
+            with safe_open(path, framework="pt", device="cpu") as f:
+                for n in ns:
+                    out[n] = _maybe_cast(f.get_tensor(n), dtype)
+        except OSError as e:
+            logger.warning("mmap of %s failed (%s) — falling back to ranged reads", fname, e)
+            _gather_ranged(path, ns, dtype, out)
     return out
 
 
