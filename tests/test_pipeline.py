@@ -330,3 +330,24 @@ def test_meta_transformer_signature_is_stable() -> None:
 
     params = list(inspect.signature(meta_transformer).parameters)
     assert params == ["model_cls", "config", "device"]
+
+
+def test_resolve_te_device_policies(monkeypatch) -> None:
+    """'auto' falls back to CPU when the encoders exceed free VRAM (FLUX's
+    9.1 GB T5-XXL on a 6 GB card); explicit requests are always honoured."""
+
+    class _P:
+        components = {"text_encoder": None}
+        text_encoder = nn.Linear(4, 4)
+
+    pipe = _P()
+    names = te.text_encoder_names(pipe)
+    cpu, cuda = torch.device("cpu"), torch.device("cuda")
+
+    assert te.resolve_te_device(pipe, names, cpu) == cpu  # non-cuda compute: as-is
+    assert te.resolve_te_device(pipe, names, cuda, "cpu") == cpu  # explicit wins
+
+    monkeypatch.setattr(te, "free_vram_bytes", lambda device=None: 10)
+    assert te.resolve_te_device(pipe, names, cuda) == cpu  # too big -> CPU
+    monkeypatch.setattr(te, "free_vram_bytes", lambda device=None: 1 << 30)
+    assert te.resolve_te_device(pipe, names, cuda) == cuda  # fits -> device

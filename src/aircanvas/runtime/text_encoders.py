@@ -39,12 +39,17 @@ import torch
 from torch import nn
 
 from aircanvas.adapters import ModelAdapter
+from aircanvas.utils.hw import free_vram_bytes
 from aircanvas.utils.memory import clean_memory
 
 logger = logging.getLogger(__name__)
 
 #: Prefix used to discover text-encoder components on a stock pipeline.
 TE_PREFIX = "text_encoder"
+
+#: Fraction of free VRAM the encoders may claim before falling back to CPU —
+#: activations, allocator fragmentation and the CUDA context need the rest.
+TE_VRAM_FRACTION = 0.8
 
 
 @dataclass
@@ -72,6 +77,46 @@ def _move(pipe: object, names: Iterable[str], device: torch.device | str) -> Non
         module = getattr(pipe, name, None)
         if isinstance(module, nn.Module):
             module.to(device)
+
+
+def _te_param_bytes(pipe: object, names: Iterable[str]) -> int:
+    total = 0
+    for name in names:
+        module = getattr(pipe, name, None)
+        if isinstance(module, nn.Module):
+            total += sum(p.numel() * p.element_size() for p in module.parameters())
+            total += sum(b.numel() * b.element_size() for b in module.buffers())
+    return total
+
+
+def resolve_te_device(
+    pipe: object,
+    names: Iterable[str],
+    device: torch.device,
+    requested: torch.device | str | None = None,
+) -> torch.device:
+    """Where to RUN the encoders (embeddings always land on `device` after).
+
+    'auto' (the default): the compute device when every encoder fits in free
+    VRAM together, else CPU — slow but one-time per prompt, and the embedding
+    cache makes repeats free. FLUX's 9.1 GB T5-XXL on a 6 GB card is the
+    motivating case: without this the whole run dies in phase 1.
+    """
+    if requested is not None and requested != "auto":
+        return torch.device(requested)
+    if device.type != "cuda":
+        return device
+    need = _te_param_bytes(pipe, names)
+    free = free_vram_bytes(device)
+    if need <= free * TE_VRAM_FRACTION:
+        return device
+    logger.warning(
+        "Text encoders need %.1f GB but only %.1f GB VRAM is free — encoding on CPU "
+        "(one-time per prompt; cached after)",
+        need / 1e9,
+        free / 1e9,
+    )
+    return torch.device("cpu")
 
 
 def _filter_kwargs(fn: object, candidate: Mapping[str, Any]) -> dict[str, Any]:
@@ -123,8 +168,10 @@ def encode_and_evict(
     negative_prompt: str | list[str] | None = None,
     encode_kwargs: Mapping[str, Any] | None = None,
     cache_dir: Path | None = None,
+    te_device: torch.device | str | None = None,
 ) -> EncodedPrompt:
-    """Run the pipeline's text encoders on `device`, then evict them to CPU.
+    """Run the pipeline's text encoders (see resolve_te_device), then evict
+    them to CPU; returned embeddings always live on `device`.
 
     Returns the subset of embedding kwargs the pipeline's `__call__` accepts.
     On a disk-cache hit the encoders are never touched at all — which is the
@@ -156,14 +203,20 @@ def encode_and_evict(
             )
 
     start = time.perf_counter()
-    _move(pipe, names, device)
+    run_device = resolve_te_device(pipe, names, device, te_device)
+    _move(pipe, names, run_device)
     try:
         with torch.no_grad():
-            out = _run_encode(pipe, adapter, device, prompt, encode_kwargs, prefix="")
+            out = _run_encode(pipe, adapter, run_device, prompt, encode_kwargs, prefix="")
             if negative_prompt is not None:
                 out.update(
                     _run_encode(
-                        pipe, adapter, device, negative_prompt, encode_kwargs, prefix="negative_"
+                        pipe,
+                        adapter,
+                        run_device,
+                        negative_prompt,
+                        encode_kwargs,
+                        prefix="negative_",
                     )
                 )
     finally:
@@ -171,7 +224,9 @@ def encode_and_evict(
         clean_memory()
     seconds = time.perf_counter() - start
 
-    kwargs = {k: v for k, v in out.items() if k in accepted and isinstance(v, torch.Tensor)}
+    kwargs = {
+        k: v.to(device) for k, v in out.items() if k in accepted and isinstance(v, torch.Tensor)
+    }
     dropped = sorted(set(out) - set(kwargs))
     if dropped:
         logger.debug("Dropped encode_prompt outputs not accepted by __call__: %s", dropped)

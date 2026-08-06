@@ -200,8 +200,17 @@ def _write_shard(
     return final.stat().st_size, (_sha256(final) if hash_shards else None)
 
 
-def _preflight(cache_dir: Path, src_dir: Path, weight_map: dict[str, str]) -> None:
-    needed = sum((src_dir / f).stat().st_size for f in set(weight_map.values()))
+#: Conservative output-size estimate per scheme, as a fraction of the source
+#: checkpoint (AirLLM's analogous 4-bit/8-bit estimates). Measured: fp8 ~0.55x
+#: (skip-list tensors stay bf16), nf4 ~0.30x (0.28x payload + verbatims).
+_PREFLIGHT_FACTOR: dict[str | None, float] = {None: 1.0, "fp8": 0.60, "nf4": 0.35}
+
+
+def _preflight(
+    cache_dir: Path, src_dir: Path, weight_map: dict[str, str], compression: Compression
+) -> None:
+    src_bytes = sum((src_dir / f).stat().st_size for f in set(weight_map.values()))
+    needed = int(src_bytes * _PREFLIGHT_FACTOR[compression])
     free = shutil.disk_usage(cache_dir).free
     if free < needed + _PREFLIGHT_MARGIN_BYTES:
         raise NotEnoughSpaceError(
@@ -242,14 +251,15 @@ def split_model(
     cache_dir = cache_dir or shard_cache_dir(source, subfolder, compression, dtype_tag)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    src_dir = _resolve_source(source, subfolder, revision, hf_token)
-    config = json.loads((src_dir / "config.json").read_text(encoding="utf-8"))
-    model_class = config["_class_name"]
-
+    # FAST PATH before touching the source: a complete cache must be reusable
+    # even after the original checkpoint was deleted to reclaim disk — the
+    # split-once-delete-original workflow is the whole point of a persistent
+    # shard cache. (The cache dir path already encodes source/subfolder/tag.)
+    existing: Manifest | None = None
     if (cache_dir / MANIFEST_NAME).is_file():
         existing = Manifest.load(cache_dir)
         if not existing.compatible_with(
-            compression=compression, compute_dtype=dtype_tag, model_class=model_class
+            compression=compression, compute_dtype=dtype_tag, model_class=existing.model_class
         ):
             raise ValueError(
                 f"Shard cache {cache_dir} was built with "
@@ -257,14 +267,25 @@ def split_model(
                 f"class={existing.model_class}) — pass a different cache_dir or delete it."
             )
         if existing.is_complete(cache_dir):
-            logger.info("Reusing complete shard cache at %s", cache_dir)
+            logger.info("Reusing complete shard cache at %s (source not touched)", cache_dir)
             return existing
+
+    src_dir = _resolve_source(source, subfolder, revision, hf_token)
+    config = json.loads((src_dir / "config.json").read_text(encoding="utf-8"))
+    model_class = config["_class_name"]
+
+    if existing is not None:
+        if existing.model_class != model_class:
+            raise ValueError(
+                f"Shard cache {cache_dir} was built for {existing.model_class}, but the "
+                f"source now has {model_class} — delete the cache or pin a revision."
+            )
         logger.warning("Shard cache at %s is incomplete — repairing", cache_dir)
 
     weight_map = _load_weight_map(src_dir)
     adapter: ModelAdapter = resolve(model_class)
     plan: BlockPlan = adapter.block_plan(list(weight_map))
-    _preflight(cache_dir, src_dir, weight_map)
+    _preflight(cache_dir, src_dir, weight_map, compression)
     logger.info(
         "Splitting %s (%s): %d blocks in %s -> %s",
         source,
