@@ -68,14 +68,21 @@ def main() -> None:
     args = ap.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
+    # text_encoder/tokenizer=None: embeddings come from the disk cache (see
+    # scratchpad pre-encode), so the 11.4 GB UMT5 is never loaded — a plain
+    # CPU load of it segfaults this 16 GB box. A cache MISS with these None
+    # will fail loudly in encode_prompt; that is the correct failure.
+    te_less = {"text_encoder": None, "tokenizer": None}
     t0 = time.perf_counter()
-    streamed_pipe = AirPipeline.from_pretrained(MODEL, compression="fp8", max_resident_blocks=0)
+    streamed_pipe = AirPipeline.from_pretrained(
+        MODEL, compression="fp8", max_resident_blocks=0, **te_less
+    )
     print(f"pipeline ready in {time.perf_counter() - t0:.1f}s")
     streamed = run(streamed_pipe, args, "streamed")
     del streamed_pipe
 
     resident_pipe = AirPipeline.from_pretrained(
-        MODEL, compression="fp8", max_resident_blocks=10_000
+        MODEL, compression="fp8", max_resident_blocks=10_000, **te_less
     )
     resident = run(resident_pipe, args, "resident")
 

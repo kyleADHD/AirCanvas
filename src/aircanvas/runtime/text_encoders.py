@@ -72,10 +72,17 @@ def text_encoder_names(pipe: object) -> tuple[str, ...]:
     )
 
 
+def _is_dispatched(module: nn.Module) -> bool:
+    """True for accelerate device_map models — they manage their own placement
+    and `.to()` on them is an error. Used to load an 11 GB UMT5 across
+    GPU+CPU+disk on a 16 GB machine where a plain CPU load segfaults."""
+    return getattr(module, "hf_device_map", None) is not None
+
+
 def _move(pipe: object, names: Iterable[str], device: torch.device | str) -> None:
     for name in names:
         module = getattr(pipe, name, None)
-        if isinstance(module, nn.Module):
+        if isinstance(module, nn.Module) and not _is_dispatched(module):
             module.to(device)
 
 
@@ -104,6 +111,8 @@ def resolve_te_device(
     """
     if requested is not None and requested != "auto":
         return torch.device(requested)
+    if any(isinstance(m := getattr(pipe, n, None), nn.Module) and _is_dispatched(m) for n in names):
+        return device  # dispatched encoders stay put; inputs go to the compute device
     if device.type != "cuda":
         return device
     need = _te_param_bytes(pipe, names)
