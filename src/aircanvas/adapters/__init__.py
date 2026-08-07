@@ -6,6 +6,7 @@ diffusers model class name to an adapter, falling back to GenericAdapter.
 
 from aircanvas.adapters import flux as _flux  # noqa: F401  (registration side effect)
 from aircanvas.adapters import qwen_image as _qwen_image  # noqa: F401  (registration side effect)
+from aircanvas.adapters import wan as _wan  # noqa: F401  (registration side effect)
 from aircanvas.adapters.base import (
     AdapterError,
     BlockPlan,
