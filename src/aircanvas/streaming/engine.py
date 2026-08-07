@@ -158,6 +158,7 @@ class StreamingEngine:
         if callable(getattr(self.model, "tie_weights", None)):
             self.model.tie_weights()
         self._bind_resident_blocks()
+        self._adopt_computed_buffers()
         if validate:
             self._validate_coverage()
         self._install_hooks()
@@ -273,6 +274,20 @@ class StreamingEngine:
             raise StreamingError(
                 f"Model tensors not covered by the shard cache (resident or blocks): {uncovered}"
             )
+
+    def _adopt_computed_buffers(self) -> None:
+        """Move real-but-misplaced tensors to the engine device.
+
+        `init_empty_weights(include_buffers=False)` computes NON-PERSISTENT
+        buffers for real at init — they are absent from checkpoints, so
+        nothing ever binds them, and they sit wherever meta-init ran (CPU).
+        Wan's rope.freqs_cos/freqs_sin are the canonical case: FLUX/Qwen
+        derive rope from the input's device per forward and never trip this
+        (RESEARCH.md §1 — AirLLM hit the identical issue with inv_freq).
+        """
+        for name, t in list(self.model.named_buffers()) + list(self.model.named_parameters()):
+            if not t.is_meta and t.device != self.device:
+                _set_tensor(self.model, name, t.to(self.device))
 
     def _install_hooks(self) -> None:
         for shard in self._streamed_blocks:
