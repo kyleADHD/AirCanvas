@@ -158,9 +158,18 @@ class StreamingEngine:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def close(self) -> None:
-        """Remove hooks and stop the prefetcher. Streamed blocks stay meta;
-        resident tensors stay bound."""
+    def close(self, release_weights: bool = True) -> None:
+        """Remove hooks, stop the prefetcher, and (by default) evict EVERY
+        bound weight — residents included — back to meta.
+
+        A new engine re-binds residents from disk in roughly one resident-set
+        read (~0.6 s), while keeping them bound leaks the whole resident set
+        across engines: the orchestrator builds a fresh engine per generation,
+        so call 2 would see call 1's ~2-3 GB still on the card and plan
+        itself right into InsufficientVRAMError (found the hard way on the
+        first Qwen-Image 20B run). Pass release_weights=False only when
+        reusing THIS engine's model for another engine-free forward.
+        """
         for h in self._hooks:
             h.remove()
         self._hooks.clear()
@@ -171,6 +180,10 @@ class StreamingEngine:
         # return slot/ring memory to the driver (close -> gc -> empty_cache).
         self._loaded.clear()
         self._active.clear()
+        if release_weights:
+            for name, t in list(self.model.named_parameters()) + list(self.model.named_buffers()):
+                if not t.is_meta:
+                    _evict_tensor(self.model, name, t)
 
     def __enter__(self) -> StreamingEngine:
         return self
