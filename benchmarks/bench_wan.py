@@ -43,6 +43,10 @@ def run(pipe: AirPipeline, args: argparse.Namespace, label: str) -> float:
         generator=torch.Generator("cpu").manual_seed(args.seed),
     )
     dt = time.perf_counter() - t
+    # Re-create right before writing: a 20-minute render is long enough for
+    # Windows temp cleanup to delete the output dir out from under us
+    # (it happened; the frames died with the process).
+    args.outdir.mkdir(parents=True, exist_ok=True)
     out = args.outdir / f"wan13b_{args.steps}step_{label}.mp4"
     from diffusers.utils import export_to_video
 
