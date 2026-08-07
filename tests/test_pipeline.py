@@ -355,3 +355,28 @@ def test_resolve_te_device_policies(monkeypatch) -> None:
     assert te.resolve_te_device(pipe, names, cuda) == cpu  # too big -> CPU
     monkeypatch.setattr(te, "free_vram_bytes", lambda device=None: 1 << 30)
     assert te.resolve_te_device(pipe, names, cuda) == cuda  # fits -> device
+
+
+def test_dispatched_encoders_are_never_moved() -> None:
+    """accelerate device_map models manage their own placement — .to() on
+    them raises. resolve_te_device must leave them alone and _move must skip
+    them (the 11.4 GB UMT5-on-16GB-RAM path)."""
+
+    class _Dispatched(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lin = nn.Linear(4, 4)
+            self.hf_device_map = {"lin": "cpu"}
+
+        def to(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError(".to() must not be called on a dispatched model")
+
+    class _P:
+        components = {"text_encoder": None}
+        text_encoder = _Dispatched()
+
+    pipe = _P()
+    names = te.text_encoder_names(pipe)
+    cuda = torch.device("cuda")
+    assert te.resolve_te_device(pipe, names, cuda) == cuda
+    te._move(pipe, names, "cpu")  # must not raise
