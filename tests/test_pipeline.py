@@ -20,7 +20,7 @@ from aircanvas.adapters import GenericAdapter
 from aircanvas.adapters.flux import FluxAdapter
 from aircanvas.runtime import text_encoders as te
 from aircanvas.runtime.orchestrator import force_execution_device
-from aircanvas.runtime.vae import configure_vae, vae_on_demand, wan_tiled_decode
+from aircanvas.runtime.vae import configure_vae, vae_on_demand
 
 TINY_FLUX = "hf-internal-testing/tiny-flux-pipe"
 
@@ -197,9 +197,13 @@ def test_vae_on_demand_times_decode_and_restores_the_method() -> None:
     assert pipe.vae.decode.__func__ is original  # instance shadow removed
 
 
-def test_wan_tiled_decode_is_an_explicit_gap() -> None:
-    with pytest.raises(NotImplementedError, match="M6"):
-        wan_tiled_decode()
+def test_wan_vae_has_upstream_tiling() -> None:
+    """The M6 custom-tiling plan was retired because diffusers 0.39 ships
+    enable_tiling on AutoencoderKLWan — pin that fact so a diffusers downgrade
+    or API rename resurfaces it loudly."""
+    from diffusers import AutoencoderKLWan
+
+    assert callable(getattr(AutoencoderKLWan, "enable_tiling", None))
 
 
 # -- execution-device override --------------------------------------------

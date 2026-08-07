@@ -60,8 +60,9 @@ import torch
 from aircanvas.config import Compression
 
 #: Parameter-name substrings never quantized (checked against the full tensor
-#: name, case-insensitively).
-QUANT_SKIP_SUBSTRINGS: tuple[str, ...] = ("norm", "modulation", "adaln", "embed")
+#: name, case-insensitively). "scale_shift" is Wan's AdaLN modulation table —
+#: same quality-sensitive class as "modulation", different naming convention.
+QUANT_SKIP_SUBSTRINGS: tuple[str, ...] = ("norm", "modulation", "adaln", "embed", "scale_shift")
 
 #: Sibling-key suffix for an fp8 tensor's scale. Cannot collide with a real
 #: parameter name (no torch module names contain "__ac_").

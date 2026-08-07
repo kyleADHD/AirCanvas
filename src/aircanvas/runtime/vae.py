@@ -1,4 +1,4 @@
-"""VAE decode with bounded memory (M4 image passthrough, M6 Wan tiling).
+"""VAE decode with bounded memory.
 
 Phase 3 of ARCHITECTURE.md §3.3. The VAE runs ONCE per output, so — like the
 text encoders and unlike the DiT — it should not occupy VRAM for the whole
@@ -8,11 +8,12 @@ times the call, which is how `pipe.report()` gets a real decode number without
 us reimplementing any part of the pipeline's latent unpacking or denormalising
 (ADR #6: we own placement, diffusers owns the maths).
 
-- Models with native support: passthrough to enable_tiling()/enable_slicing().
-- AutoencoderKLWan: diffusers only frame-chunks via feat_cache (CACHE_T=2) —
-  NO spatial tiling upstream. We ship spatial tile decode with causal-cache-
-  aware overlap blending. This is AirCanvas's upstream-worthy contribution
-  (ROADMAP M6); `wan_tiled_decode` below is the placeholder for it.
+Passthrough to enable_tiling()/enable_slicing() covers every current target:
+as of diffusers 0.39 that INCLUDES AutoencoderKLWan, which gained spatial
+tiling upstream after our research snapshot — the custom Wan tiling this
+module once planned (old ROADMAP M6) is happily obsolete. configure_vae's
+duck-typing needs no per-model knowledge; it reports what it actually enabled
+so a future untileable VAE shows up in the report rather than OOMing silently.
 """
 
 from __future__ import annotations
@@ -30,9 +31,6 @@ from aircanvas.utils.memory import clean_memory
 
 logger = logging.getLogger(__name__)
 
-#: VAE classes diffusers cannot spatially tile today (RESEARCH.md §4).
-NO_UPSTREAM_TILING = ("AutoencoderKLWan",)
-
 
 def configure_vae(vae: nn.Module | None, *, tiling: bool = True, slicing: bool = True) -> list[str]:
     """Turn on whatever bounded-memory decode the model supports natively.
@@ -49,10 +47,9 @@ def configure_vae(vae: nn.Module | None, *, tiling: bool = True, slicing: bool =
     if slicing and callable(getattr(vae, "enable_slicing", None)):
         vae.enable_slicing()
         enabled.append("slicing")
-    if type(vae).__name__ in NO_UPSTREAM_TILING and "tiling" not in enabled:
+    if tiling and "tiling" not in enabled:
         logger.warning(
-            "%s has no spatial tiling in diffusers; decode memory is unbounded in resolution "
-            "until AirCanvas ships tiled Wan-VAE decode (ROADMAP M6).",
+            "%s exposes no enable_tiling(); decode memory is unbounded in resolution.",
             type(vae).__name__,
         )
     return enabled
@@ -97,15 +94,3 @@ def vae_on_demand(
             vae.decode = original  # type: ignore[method-assign]
         if evict:
             clean_memory()
-
-
-def wan_tiled_decode(*args: object, **kwargs: object) -> torch.Tensor:
-    """Spatially tiled AutoencoderKLWan decode — ROADMAP M6.
-
-    Deliberately not stubbed as a silent passthrough: a caller that reaches
-    here on a 720p video would OOM in a way that looks like our bug.
-    """
-    raise NotImplementedError(
-        "Tiled Wan-VAE decode lands in M6 (docs/ROADMAP.md). Until then, decode Wan latents "
-        "at a resolution the unbounded upstream decoder can hold."
-    )
