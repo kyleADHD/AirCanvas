@@ -167,6 +167,10 @@ class StreamingEngine:
         if self._prefetcher is not None:
             self._prefetcher.close()
             self._prefetcher = None
+        # Drop buffer references so the caller's clean_memory() can actually
+        # return slot/ring memory to the driver (close -> gc -> empty_cache).
+        self._loaded.clear()
+        self._active.clear()
 
     def __enter__(self) -> StreamingEngine:
         return self
