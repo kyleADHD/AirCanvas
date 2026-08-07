@@ -114,6 +114,26 @@ def test_close_removes_hooks(toy) -> None:
         streamed(torch.randn(1, 8))  # blocks are meta and nothing streams them
 
 
+def test_close_releases_all_weights(toy) -> None:
+    """Default close() must leave NOTHING bound — a fresh engine per call
+    means kept residents are a pure cross-engine VRAM leak (the first
+    Qwen-Image 20B run died on exactly this)."""
+    _, _, manifest, cache = toy
+    streamed = meta_toy()
+    engine = StreamingEngine(streamed, manifest, cache, device="cpu")
+    with torch.no_grad():
+        streamed(torch.randn(1, 8))
+    engine.close()
+    still_bound = [n for n, p in streamed.named_parameters() if not p.is_meta]
+    assert still_bound == [], still_bound
+
+    # opt-out keeps residents for engine-free reuse of the bound model
+    streamed2 = meta_toy()
+    engine2 = StreamingEngine(streamed2, manifest, cache, device="cpu")
+    engine2.close(release_weights=False)
+    assert any(not p.is_meta for _, p in streamed2.named_parameters())
+
+
 @pytest.mark.gpu
 def test_streamed_equals_reference_on_cuda(toy) -> None:
     reference, _, manifest, cache = toy
