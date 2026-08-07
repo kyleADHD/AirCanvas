@@ -149,3 +149,23 @@ def test_streamed_equals_reference_on_cuda(toy) -> None:
 
     assert torch.equal(out, expected)
     assert engine.stats["block_loads"] == len(manifest.blocks)
+
+
+@pytest.mark.gpu
+def test_computed_buffers_are_adopted_onto_the_device(toy) -> None:
+    """Non-persistent buffers (absent from checkpoints, computed at meta-init
+    on CPU — Wan's rope.freqs) must land on the engine device or forwards mix
+    devices mid-attention."""
+    _, _, manifest, cache = toy
+
+    class ToyDiTWithRope(ToyDiT):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("freqs", torch.arange(8, dtype=torch.float32), persistent=False)
+
+    with torch.device("meta"):
+        model = ToyDiTWithRope()
+    # simulate include_buffers=False: the buffer is real, computed on CPU
+    model.freqs = torch.arange(8, dtype=torch.float32)
+    with StreamingEngine(model, manifest, cache, device="cuda"):
+        assert model.freqs.device.type == "cuda"
