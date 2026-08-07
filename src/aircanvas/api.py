@@ -246,6 +246,11 @@ class AirPipeline:
         width = call_kwargs.get("width")
         if height is None or width is None:
             return
+        # Release the PREVIOUS generation's cached buffers (slot pools, upcast
+        # pool, activations) before measuring free VRAM — the caching allocator
+        # holds them until empty_cache, and measuring first reads ~3 GB of our
+        # own garbage as "used", failing plans that would fit fine.
+        clean_memory()
         frames = int(call_kwargs.get("num_frames", 1) or 1)
         workload = Workload(
             steps=int(call_kwargs.get("num_inference_steps", Workload.steps) or Workload.steps),
