@@ -151,6 +151,12 @@ class StreamingEngine:
                 f"Shard cache {self.cache_dir} is incomplete — re-run `aircanvas split`"
             )
         self._load_resident()
+        # transformers models tie embeddings (UMT5: encoder.embed_tokens ->
+        # shared). Binding `shared.weight` replaces the Parameter object, which
+        # silently breaks the tie — re-tie so the alias points at the bound
+        # tensor instead of a meta leftover (AirLLM's exact lesson).
+        if callable(getattr(self.model, "tie_weights", None)):
+            self.model.tie_weights()
         self._bind_resident_blocks()
         if validate:
             self._validate_coverage()

@@ -303,7 +303,12 @@ def split_model(
 
     src_dir = _resolve_source(source, subfolder, revision, hf_token)
     config = json.loads((src_dir / "config.json").read_text(encoding="utf-8"))
-    model_class = config["_class_name"]
+    # diffusers configs carry _class_name; transformers configs carry
+    # architectures — text encoders are streamable transformers too (a 16 GB
+    # box cannot even LOAD Wan's 11.4 GB UMT5, but it can stream it).
+    model_class = config.get("_class_name") or next(iter(config.get("architectures", [])), None)
+    if not model_class:
+        raise ValueError(f"{src_dir / 'config.json'} names no model class")
 
     if existing is not None:
         if existing.model_class != model_class:
