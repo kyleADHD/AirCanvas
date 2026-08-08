@@ -132,3 +132,36 @@ def test_prefetched_equals_reference_on_cuda(toy) -> None:
 
     n = len(manifest.blocks)
     assert engine.stats["prefetch_hits"] == (N_STEPS - 1) * n - 1
+
+
+def test_ram_cache_tier_serves_repeat_steps(toy) -> None:
+    """With budget for the whole streamed set, steps 3+ read from RAM, not
+    disk — and output stays bitwise-identical."""
+    reference, manifest, cache = toy
+    x = torch.randn(1, 8, generator=torch.Generator().manual_seed(8))
+    with torch.no_grad():
+        expected = reference(x)
+    streamed = ToyDiT().to("meta").eval()
+    with (
+        StreamingEngine(streamed, manifest, cache, device="cpu", ram_cache_bytes=1 << 30) as engine,
+        torch.no_grad(),
+    ):
+        for _ in range(4):
+            assert torch.equal(streamed(x), expected)
+    # step 1 sync (recording), step 2 fills the cache as it streams, steps 3-4
+    # are pure RAM hits for every prefetched block.
+    assert engine.stats["ram_cache_hits"] >= 2 * len(manifest.blocks) - 2
+    assert engine.stats["ram_cache_hits"] > 0
+
+
+def test_ram_cache_disabled_by_default(toy) -> None:
+    reference, manifest, cache = toy
+    x = torch.randn(1, 8)
+    streamed = ToyDiT().to("meta").eval()
+    with (
+        StreamingEngine(streamed, manifest, cache, device="cpu") as engine,
+        torch.no_grad(),
+    ):
+        for _ in range(3):
+            streamed(x)
+    assert engine.stats["ram_cache_hits"] == 0
