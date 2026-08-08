@@ -47,6 +47,7 @@ import torch
 from torch import nn
 
 from aircanvas.adapters import ModelAdapter
+from aircanvas.config import StreamConfig
 from aircanvas.runtime.text_encoders import EncodedPrompt, encode_and_evict, text_encoder_names
 from aircanvas.runtime.vae import configure_vae, vae_on_demand
 from aircanvas.sharding.manifest import Manifest
@@ -138,6 +139,68 @@ def force_execution_device(pipe: Any, device: torch.device) -> Iterator[None]:
         pipe.__class__ = original_cls
 
 
+def arm_expert_handover(
+    pipe: Any,
+    extra_manifests: Mapping[str, tuple[Manifest, Path]],
+    engines: dict[str, StreamingEngine],
+    *,
+    device: torch.device,
+    config: StreamConfig | None = None,
+    prefetch: bool = True,
+) -> list[torch.utils.hooks.RemovableHandle]:
+    """Lazy per-timestep expert switching (Wan 2.2's dual DiT, M7).
+
+    The pipeline swaps from `transformer` (high-noise expert) to
+    `transformer_2` (low-noise) at a boundary timestep it manages itself — we
+    only decide where weights live (ADR #6). Building both engines up front
+    would double pool VRAM for the whole run, so the successor's engine is
+    built INSIDE its first forward pre-hook: every prior engine is closed
+    first (weights, pools, residents all released), and the newcomer inherits
+    the full budget. The boundary is one-way, so closed experts stay closed;
+    the hook removes itself after firing.
+    """
+    hooks: list[torch.utils.hooks.RemovableHandle] = []
+    for name, (manifest, cache_dir) in extra_manifests.items():
+        module = getattr(pipe, name, None)
+        if not isinstance(module, nn.Module):
+            logger.warning("extra manifest %r has no matching pipeline module — skipped", name)
+            continue
+
+        handle_box: dict[str, torch.utils.hooks.RemovableHandle] = {}
+
+        def _handover(
+            mod: nn.Module,
+            args: tuple,
+            kwargs: dict,
+            _name: str = name,
+            _manifest: Manifest = manifest,
+            _cache: Path = cache_dir,
+            _box: dict = handle_box,
+        ) -> None:
+            _box["h"].remove()
+            if _box["h"] in hooks:
+                hooks.remove(_box["h"])
+            for prior in list(engines.values()):
+                prior.close()
+            engines.clear()
+            clean_memory()
+            engines[_name] = StreamingEngine(
+                mod,
+                _manifest,
+                _cache,
+                device=device,
+                config=config,
+                prefetch=prefetch,
+                resident_blocks=0,
+            )
+            logger.info("Expert handover: %s now streams; prior engines released", _name)
+
+        handle = module.register_forward_pre_hook(_handover, with_kwargs=True)
+        handle_box["h"] = handle
+        hooks.append(handle)
+    return hooks
+
+
 class Orchestrator:
     """Runs one stock pipeline in three explicitly-placed phases."""
 
@@ -153,6 +216,7 @@ class Orchestrator:
         embed_cache_dir: Path | None = None,
         prefetch: bool = True,
         text_encoder_device: torch.device | str | None = None,
+        extra_manifests: dict[str, tuple[Manifest, Path]] | None = None,
     ) -> None:
         if not hasattr(pipe, "encode_prompt"):
             raise OrchestrationError(
@@ -168,6 +232,7 @@ class Orchestrator:
         self.embed_cache_dir = embed_cache_dir
         self.prefetch = prefetch
         self.text_encoder_device = text_encoder_device
+        self.extra_manifests = dict(extra_manifests or {})
         self.stats = PhaseStats()
         self.vae_features = configure_vae(getattr(pipe, "vae", None))
         logger.info(
@@ -213,6 +278,15 @@ class Orchestrator:
             prefetch=self.prefetch,
             resident_blocks=self.plan.resident_blocks,
         )
+        engines: dict[str, StreamingEngine] = {"transformer": engine}
+        handover_hooks = arm_expert_handover(
+            self.pipe,
+            self.extra_manifests,
+            engines,
+            device=self.device,
+            config=self.plan.stream_config(),
+            prefetch=self.prefetch,
+        )
         denoise_start = time.perf_counter()
         try:
             with (
@@ -222,8 +296,15 @@ class Orchestrator:
             ):
                 result = self.pipe(**encoded.kwargs, **call_kwargs)
         finally:
-            engine.close()
+            for h in handover_hooks:
+                h.remove()
+            for eng in engines.values():
+                eng.close()
             stats.engine = dict(engine.stats)
+            for name, eng in engines.items():
+                if name != "transformer":
+                    stats.engine[f"{name}_block_loads"] = eng.stats["block_loads"]
+                    stats.engine[f"{name}_bytes_loaded"] = eng.stats["bytes_loaded"]
             clean_memory()
 
         stats.decode_s = phase_times.get("decode_s", 0.0)

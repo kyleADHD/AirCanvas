@@ -24,6 +24,7 @@ StreamingEngine, VAE pulled in for decode only.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
 from pathlib import Path
@@ -61,6 +62,32 @@ def _require_diffusers() -> Any:
     return diffusers
 
 
+def _extra_transformer_components(
+    model_id: str, revision: str | None, token: str | None
+) -> tuple[str, ...]:
+    """Names of secondary transformer components in the pipeline's
+    model_index.json (Wan 2.2 ships `transformer_2`). Empty on any failure —
+    a missing index must not break single-transformer models."""
+    try:
+        local = Path(model_id) / "model_index.json"
+        if local.is_file():
+            text = local.read_text(encoding="utf-8")
+        else:
+            from huggingface_hub import hf_hub_download
+
+            text = Path(
+                hf_hub_download(model_id, "model_index.json", revision=revision, token=token)
+            ).read_text(encoding="utf-8")
+        index = json.loads(text)
+    except Exception:  # noqa: BLE001 — best-effort probe
+        return ()
+    return tuple(
+        name
+        for name, spec in index.items()
+        if name.startswith("transformer_") and isinstance(spec, list) and spec[-1]
+    )
+
+
 def _resolve_dtype(name: str | torch.dtype) -> torch.dtype:
     if isinstance(name, torch.dtype):
         return name
@@ -91,6 +118,7 @@ class AirPipeline:
         ram_budget: int | None = None,
         max_resident_blocks: int | None = None,
         text_encoder_device: torch.device | str | None = None,
+        extra_manifests: dict[str, tuple[Manifest, Path]] | None = None,
     ) -> None:
         self.pipeline = pipeline
         self.manifest = manifest
@@ -114,6 +142,7 @@ class AirPipeline:
             embed_cache_dir=embed_cache_dir,
             prefetch=prefetch,
             text_encoder_device=text_encoder_device,
+            extra_manifests=extra_manifests,
         )
 
     # -- construction ------------------------------------------------------
@@ -193,6 +222,32 @@ class AirPipeline:
         )
         transformer = meta_transformer(model_cls, config, dev)
 
+        # Per-timestep expert models (Wan 2.2's transformer_2, M7): split each
+        # extra transformer subfolder and hand a meta instance to the pipeline
+        # so diffusers never loads its 28 GB into RAM. The successor's engine
+        # is built lazily at the boundary (orchestrator.arm_expert_handover);
+        # explicit shard_cache= applies to the PRIMARY only, extras always use
+        # the default cache location.
+        extra_manifests: dict[str, tuple[Manifest, Path]] = {}
+        for extra_name in _extra_transformer_components(model_id, revision, hf_token):
+            if extra_name in pipeline_kwargs:
+                continue  # caller supplied it (e.g. =None to skip)
+            extra_cache = shard_cache_dir(model_id, extra_name, compression, dtype_name)
+            extra_manifest = split_model(
+                model_id,
+                cache_dir=extra_cache,
+                compression=compression,
+                subfolder=extra_name,
+                revision=revision,
+                compute_dtype=dtype_name,
+                hf_token=hf_token,
+            )
+            extra_config = model_cls.load_config(
+                model_id, subfolder=extra_name, revision=revision, token=hf_token
+            )
+            pipeline_kwargs[extra_name] = meta_transformer(model_cls, extra_config, dev)
+            extra_manifests[extra_name] = (extra_manifest, extra_cache)
+
         pipeline_kwargs.setdefault("torch_dtype", dtype)
         pipeline = diffusers.DiffusionPipeline.from_pretrained(
             model_id,
@@ -222,6 +277,7 @@ class AirPipeline:
             ram_budget=ram_bytes,
             max_resident_blocks=max_resident_blocks,
             text_encoder_device=text_encoder_device,
+            extra_manifests=extra_manifests,
         )
 
     # -- use ---------------------------------------------------------------
