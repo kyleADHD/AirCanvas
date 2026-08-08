@@ -277,6 +277,7 @@ class Orchestrator:
             config=self.plan.stream_config(),
             prefetch=self.prefetch,
             resident_blocks=self.plan.resident_blocks,
+            ram_cache_bytes=self.plan.ram_cache_bytes,
         )
         engines: dict[str, StreamingEngine] = {"transformer": engine}
         handover_hooks = arm_expert_handover(

@@ -99,10 +99,12 @@ class StreamingEngine:
         prefetch: bool = True,
         validate: bool = True,
         resident_blocks: int = 0,
+        ram_cache_bytes: int = 0,
     ) -> None:
         self.model = model
         self.manifest = manifest
         self.cache_dir = Path(cache_dir)
+        self._ram_cache_bytes = max(0, ram_cache_bytes)
         self.device = torch.device(device)
         self.config = config or StreamConfig()
         self._prefetch_enabled = prefetch
@@ -144,6 +146,7 @@ class StreamingEngine:
             "resident_block_bytes": sum(b.materialized_bytes for b in self._resident_blocks),
             "slot_bytes": 0,
             "pinned_bytes": 0,
+            "ram_cache_hits": 0,
         }
 
         if not manifest.is_complete(self.cache_dir):
@@ -216,6 +219,8 @@ class StreamingEngine:
             f"  prefetched       {int(s['prefetch_hits'])}  (wait {s['prefetch_wait_s']:.2f}s)",
             f"  synchronous      {int(s['sync_loads'])}  (load {s['sync_load_s']:.2f}s)",
         ]
+        if s["ram_cache_hits"]:
+            lines.append(f"  from RAM cache   {int(s['ram_cache_hits'])}  (no disk read)")
         if s["resident_blocks"]:
             lines.append(
                 f"blocks resident    {int(s['resident_blocks'])}  "
@@ -317,6 +322,8 @@ class StreamingEngine:
                 item = self._prefetcher.get(shard.name)
                 self.stats["prefetch_wait_s"] += time.perf_counter() - t0
                 self.stats["prefetch_hits"] += 1
+                if item.from_ram:
+                    self.stats["ram_cache_hits"] += 1
                 self._active[shard.name] = item
                 tensors = item.views
             except PrefetchMismatch as e:
@@ -373,6 +380,7 @@ class StreamingEngine:
                 start_index=start,
                 device=self.device,
                 config=self.config,
+                ram_cache_bytes=self._ram_cache_bytes,
             )
             self.stats["slot_bytes"] = self._prefetcher.slot_bytes
             self.stats["pinned_bytes"] = self._prefetcher.pinned_bytes

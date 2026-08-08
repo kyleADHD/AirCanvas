@@ -277,6 +277,7 @@ class ReadyItem:
     ready_event: torch.cuda.Event | None
     pinned: _PinnedBuf
     slot: _Slot | None
+    from_ram: bool = False  # served from the RAM shard cache, not disk
 
 
 #: Both buffer wrappers are acquired from queues through the same helper.
@@ -297,10 +298,18 @@ class Prefetcher:
         start_index: int,
         device: torch.device,
         config: StreamConfig | None = None,
+        ram_cache_bytes: int = 0,
     ) -> None:
         config = config or StreamConfig()
         if config.ring_depth < 1 or config.gpu_slots < 2:
             raise PrefetchError("ring_depth must be >= 1 and gpu_slots >= 2")
+        # RAM shard-cache tier (M8): raw blobs are promoted into pageable RAM
+        # after their first disk read, up to the budget the solver granted.
+        # With the whole streamed set cached, disk is touched exactly once per
+        # run — the mmgp niche, folded into the cache hierarchy.
+        self._ram_budget = max(0, ram_cache_bytes)
+        self._ram_cache: dict[str, torch.Tensor] = {}
+        self._ram_used = 0
         if not schedule:
             raise PrefetchError("Nothing to prefetch: the recorded schedule is empty")
         by_name = {b.name: b for b in manifest.blocks}
@@ -433,11 +442,21 @@ class Prefetcher:
                     return
                 if pinned.event is not None:
                     pinned.event.synchronize()  # prior copy out of this buf done
-                header.read_blob_into(pinned.buf)
+                cached = self._ram_cache.get(name)
+                if cached is not None:
+                    pinned.buf[: header.blob_size].copy_(cached)
+                else:
+                    header.read_blob_into(pinned.buf)
+                    if self._ram_used + header.blob_size <= self._ram_budget:
+                        # clone() uses the default allocator: the cache lives in
+                        # pageable RAM, not precious pinned memory.
+                        self._ram_cache[name] = pinned.buf[: header.blob_size].clone()
+                        self._ram_used += header.blob_size
 
                 item = self._stage(name, header, pinned)
                 if item is None:
                     return
+                item.from_ram = cached is not None
 
                 while not self._stop.is_set():
                     try:

@@ -18,10 +18,10 @@ Waterfall policy (ARCHITECTURE.md §3.2), not an ILP:
 Every OOM path prints the plan that was attempted (ARCHITECTURE.md §4): see
 `InsufficientVRAMError`, which carries `ResidencyPlan.describe()`.
 
-**Scope note.** M4 *sizes* the pinned shard RAM cache and reports it; the cache
-tier itself is ROADMAP M8 ("RAM-cache auto-promotion tier"). `ram_cache_bytes`
-is therefore advisory today — it tells you how much of the model would fit, and
-`describe()` labels it as planned-not-active so a report is never misleading.
+**Scope note.** `ram_cache_bytes` is live as of M8: the prefetcher promotes
+raw shard blobs into pageable RAM after their first disk read, up to this
+budget — with the whole streamed set cached, disk is touched exactly once per
+run and repeat steps are PCIe-bound instead of NVMe-bound.
 """
 
 from __future__ import annotations
@@ -114,7 +114,7 @@ class ResidencyPlan:
             f"non-block resident {self.resident_shard_bytes / gb:.2f} GB",
             f"VRAM planned       {self.vram_planned_bytes / gb:.2f} GB "
             f"of {self.vram_budget_bytes / gb:.2f} GB budget",
-            f"RAM shard cache    {self.ram_cache_bytes / gb:.2f} GB (planned; tier lands in M8)",
+            f"RAM shard cache    {self.ram_cache_bytes / gb:.2f} GB (promoted after first read)",
         ]
         lines += [f"WARNING: {w}" for w in self.warnings]
         return "\n".join(lines)
