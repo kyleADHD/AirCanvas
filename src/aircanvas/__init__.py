@@ -4,7 +4,7 @@ Streams quantized per-block weight shards from disk just-in-time during the
 denoise loop. See docs/ARCHITECTURE.md for the full design.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 # Imported after __version__ so the splitter's `from aircanvas import __version__`
 # resolves while this module is still initialising.
