@@ -169,12 +169,12 @@ def test_low_ram_shrinks_the_ring_and_warns() -> None:
     assert any("Pinned ring reduced" in w for w in plan.warnings)
 
 
-def test_plentiful_ram_sizes_the_shard_cache_and_flags_it_as_planned() -> None:
+def test_plentiful_ram_sizes_the_shard_cache() -> None:
     manifest = make_manifest(n_blocks=10, block_bytes=200 * MB)
     plan = solve(manifest, profile(4 * GB, ram=64 * GB), SMALL_WORKLOAD, max_resident_blocks=0)
     assert plan.ram_cache_bytes == plan.step_read_bytes
     assert any("M8" in w for w in plan.warnings)
-    assert "planned; tier lands in M8" in plan.describe()
+    assert "promoted after first read" in plan.describe()  # tier is live (M8)
 
 
 # -- warnings --------------------------------------------------------------
