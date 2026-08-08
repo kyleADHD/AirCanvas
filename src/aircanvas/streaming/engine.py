@@ -155,8 +155,9 @@ class StreamingEngine:
         # shared). Binding `shared.weight` replaces the Parameter object, which
         # silently breaks the tie — re-tie so the alias points at the bound
         # tensor instead of a meta leftover (AirLLM's exact lesson).
-        if callable(getattr(self.model, "tie_weights", None)):
-            self.model.tie_weights()
+        tie_weights = getattr(self.model, "tie_weights", None)
+        if callable(tie_weights):
+            tie_weights()
         self._bind_resident_blocks()
         self._adopt_computed_buffers()
         if validate:
