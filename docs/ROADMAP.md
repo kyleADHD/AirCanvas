@@ -51,12 +51,12 @@ fp8 halves disk traffic and roughly halves step time on this workload. Resident 
 - SDPA/Flash attention verification at video token counts; CFG batch handling.
 - Optional **token-chunked FFN execution** (adapter knob): split the ~75k-token sequence through per-block MLPs so the 2–3 GB FFN transient drops to ~0.5 GB at a few % speed cost — makes 720p comfortable on 6 GB.
 
-## M7 — Wan 2.2 MoE + HunyuanVideo
-- Per-timestep expert scheduling (only active expert's shards stream).
-- Hunyuan dual/single blocks; Llava-8B TE evict; guidance-distilled path (no CFG).
+## M7 — Wan 2.2 MoE + HunyuanVideo — **code complete** (real-model runs pending 26-57 GB downloads)
+- Per-timestep expert handover: the low-noise expert's engine is built lazily inside its first forward pre-hook after all prior engines are released — pool VRAM never doubles; transformer_2 auto-detected from model_index.json and meta-built so 28 GB never touches RAM. ✅ (toy-verified)
+- HunyuanVideo adapter (20 dual + 40 single, validated against the live index; guidance-distilled, one forward/step); its 15 GB Llava TE uses the split-and-stream recipe proven on UMT5 in M6. ✅
 
-## M8 — Polish & release
-- SD3.5-L, CogVideoX adapters; RAM-cache auto-promotion tier; benchmark suite results published; README with reproducible numbers; PyPI release.
+## M8 — Polish & release — **done** (PyPI upload itself needs an account token)
+- SD3.5 + CogVideoX adapters ✅ (CogVideoX validated against the live index; SD3.5 gated, pinned from card). RAM-cache auto-promotion tier live ✅ (blobs promoted to pageable RAM after first read; hits in report()). GitHub Actions CI (Windows+Linux, lint+mypy+CPU tests) ✅. docs/BENCHMARKS.md + README rewritten around measured numbers ✅. v0.1.0 + CHANGELOG tagged ✅.
 
 ## Later / explicitly deferred
 - LoRA loading onto quantized shards; HiDream (4-TE stack + MoE FFN); GGUF Q4 shard format; io_uring/GDS fast path; upstreaming pieces to diffusers; distilled-model RAM-tier heuristics; multi-GPU.

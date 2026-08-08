@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aircanvas"
-version = "0.0.1"
+version = "0.1.0"
 description = "Run 20B+ image & video diffusion models on 4-8 GB GPUs by streaming quantized model blocks from disk."
 readme = "README.md"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [{ name = "Kyle Hulley" }]
 keywords = ["diffusion", "flux", "wan", "video-generation", "low-vram", "offloading", "airllm"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
