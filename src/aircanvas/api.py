@@ -104,15 +104,17 @@ def _pipeline_allow_patterns(index: dict, passed: set[str]) -> list[str]:
     return patterns
 
 
-def _local_pipeline_root(
+def _pipeline_root_and_index(
     model_id: str, passed: set[str], revision: str | None, token: str | None
-) -> str:
-    """A local directory containing exactly the pipeline pieces we need, or
-    `model_id` unchanged (local paths; any probe failure falls back to the
-    stock download path)."""
-    if Path(model_id).is_dir():
-        return model_id
+) -> tuple[str, dict | None]:
+    """(local pipeline root, parsed model_index) — index None means fall back
+    to stock DiffusionPipeline.from_pretrained on `model_id`."""
     try:
+        local = Path(model_id) / "model_index.json"
+        if local.is_file():
+            return model_id, json.loads(local.read_text(encoding="utf-8"))
+        if Path(model_id).is_dir():
+            return model_id, None
         from huggingface_hub import hf_hub_download, snapshot_download
 
         index_path = hf_hub_download(model_id, "model_index.json", revision=revision, token=token)
@@ -123,10 +125,54 @@ def _local_pipeline_root(
             revision=revision,
             token=token,
         )
-        return root
+        return root, index
     except Exception as e:  # noqa: BLE001 — fall back to stock behaviour
-        logger.warning("Selective pipeline download failed (%s); using stock path", e)
-        return model_id
+        logger.warning("Selective pipeline resolution failed (%s); using stock path", e)
+        return model_id, None
+
+
+def _assemble_pipeline(
+    diffusers_mod: Any,
+    root: str,
+    index: dict,
+    provided: dict[str, Any],
+    torch_dtype: torch.dtype,
+) -> Any:
+    """Build the pipeline class directly from model_index components.
+
+    DiffusionPipeline.from_pretrained only honors passed instances for
+    REQUIRED __init__ params: WanPipeline's `transformer=None` default (there
+    for the 2.2 dual-expert case) makes it 'optional', so a passed meta
+    transformer is ignored and the 57 GB checkpoint gets loaded — or, once
+    deleted, FileNotFoundError. Assembling ourselves sidesteps that dispatch
+    entirely: provided components (instances or None) are used as-is, and
+    only the rest load from disk.
+    """
+    import importlib
+    import inspect
+
+    pipeline_cls = getattr(diffusers_mod, index["_class_name"])
+    components: dict[str, Any] = {}
+    for name, spec in index.items():
+        if name.startswith("_"):
+            continue
+        if name in provided:
+            components[name] = provided[name]
+            continue
+        if not isinstance(spec, list) or len(spec) != 2 or not spec[1]:
+            components[name] = spec  # scalar init config (boundary_ratio, ...)
+            continue
+        library_name, class_name = spec
+        library = importlib.import_module(library_name)
+        component_cls = getattr(library, class_name)
+        try:
+            components[name] = component_cls.from_pretrained(
+                root, subfolder=name, torch_dtype=torch_dtype
+            )
+        except TypeError:  # tokenizers/schedulers take no torch_dtype
+            components[name] = component_cls.from_pretrained(root, subfolder=name)
+    accepted = set(inspect.signature(pipeline_cls.__init__).parameters)
+    return pipeline_cls(**{k: v for k, v in components.items() if k in accepted})
 
 
 def _resolve_dtype(name: str | torch.dtype) -> torch.dtype:
@@ -290,15 +336,19 @@ class AirPipeline:
             extra_manifests[extra_name] = (extra_manifest, extra_cache)
 
         pipeline_kwargs.setdefault("torch_dtype", dtype)
-        passed = {"transformer", *pipeline_kwargs.keys()} - {"torch_dtype"}
-        pipeline_root = _local_pipeline_root(model_id, passed, revision, hf_token)
-        pipeline = diffusers.DiffusionPipeline.from_pretrained(
-            pipeline_root,
-            transformer=transformer,
-            revision=revision if pipeline_root == model_id else None,
-            token=hf_token,
-            **pipeline_kwargs,
-        )
+        provided: dict[str, Any] = {"transformer": transformer}
+        provided.update({k: v for k, v in pipeline_kwargs.items() if k != "torch_dtype"})
+        pipeline_root, index = _pipeline_root_and_index(model_id, set(provided), revision, hf_token)
+        if index is not None:
+            pipeline = _assemble_pipeline(diffusers, pipeline_root, index, provided, dtype)
+        else:
+            pipeline = diffusers.DiffusionPipeline.from_pretrained(
+                model_id,
+                transformer=transformer,
+                revision=revision,
+                token=hf_token,
+                **pipeline_kwargs,
+            )
         clean_memory()
 
         embed_cache = None
