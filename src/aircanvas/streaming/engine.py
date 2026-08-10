@@ -42,13 +42,12 @@ from functools import partial
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file
 from torch import nn
 
 from aircanvas.config import StreamConfig
-from aircanvas.sharding import quant
 from aircanvas.sharding.manifest import BlockShard, Manifest
 from aircanvas.streaming.prefetch import (
+    DecompressPlan,
     Prefetcher,
     PrefetchError,
     PrefetchMismatch,
@@ -237,18 +236,26 @@ class StreamingEngine:
 
     def _materialize(self, path: Path) -> dict[str, torch.Tensor]:
         """Load one shard file straight onto the device, decompressing if the
-        cache is compressed. Allocates — never called from the hot loop."""
-        raw = load_file(path, device=str(self.device))
+        cache is compressed. Allocates — never called from the hot loop.
+
+        Deliberately mmap-free: safetensors ``load_file`` maps the file, and
+        Windows kills mapped reads under commit pressure (the Wan 14B first
+        step — 80 of these back-to-back — segfaulted two whole benchmark
+        attempts this way). Ranged reads + the prefetcher's own DecompressPlan
+        machinery produce byte-identical results with plain buffered IO.
+        """
+        header = ShardHeader.parse(path)
+        buf = torch.empty(header.blob_size, dtype=torch.uint8)
+        header.read_blob_into(buf)
         if self.manifest.compression is None:
-            return raw
+            views = header.build_views(buf)
+            return {name: view.to(self.device) for name, view in views.items()}
         assert self._compute_dtype is not None
-        metadata = ShardHeader.parse(path).metadata if self.manifest.compression == "nf4" else None
-        return quant.decompress_state_dict(
-            raw,
-            compression=self.manifest.compression,
-            compute_dtype=self._compute_dtype,
-            metadata=metadata,
-        )
+        plan = DecompressPlan.build(header, self._compute_dtype)
+        src = buf.to(self.device)
+        dst = torch.empty(plan.out_bytes, dtype=torch.uint8, device=self.device)
+        plan.run(src, dst)
+        return plan.views(dst)
 
     def _load_resident(self) -> None:
         for name, t in self._materialize(self.cache_dir / self.manifest.resident_file).items():
