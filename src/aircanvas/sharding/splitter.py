@@ -231,17 +231,35 @@ def _write_shard(
     return final.stat().st_size, (_sha256(final) if hash_shards else None)
 
 
-#: Conservative output-size estimate per scheme, as a fraction of the source
-#: checkpoint (AirLLM's analogous 4-bit/8-bit estimates). Measured: fp8 ~0.55x
-#: (skip-list tensors stay bf16), nf4 ~0.30x (0.28x payload + verbatims).
+#: Conservative output-size estimate per scheme, as a fraction of the
+#: COMPUTE-DTYPE checkpoint size (AirLLM's analogous 4-bit/8-bit estimates).
+#: Measured: fp8 ~0.55x (skip-list tensors stay bf16), nf4 ~0.30x.
 _PREFLIGHT_FACTOR: dict[str | None, float] = {None: 1.0, "fp8": 0.60, "nf4": 0.35}
 
 
 def _preflight(
-    cache_dir: Path, src_dir: Path, weight_map: dict[str, str], compression: Compression
+    cache_dir: Path,
+    src_dir: Path,
+    weight_map: dict[str, str],
+    compression: Compression,
+    dtype: torch.dtype | None,
 ) -> None:
-    src_bytes = sum((src_dir / f).stat().st_size for f in set(weight_map.values()))
-    needed = int(src_bytes * _PREFLIGHT_FACTOR[compression])
+    """Refuse before writing anything if the output cannot fit.
+
+    Sized from the CAST size, not the file size: Wan's diffusers repos ship
+    fp32, so "0.6x the source" would demand double the real fp8 output and
+    refuse splits that fit fine. Header parses only — no tensor data is read.
+    """
+    cast_bytes = 0
+    for fname in set(weight_map.values()):
+        header = ShardHeader.parse(src_dir / fname)
+        for m in header.tensors:
+            n = torch.Size(m.shape).numel()
+            itemsize = m.dtype.itemsize
+            if dtype is not None and m.dtype.is_floating_point and itemsize >= 2:
+                itemsize = dtype.itemsize  # _maybe_cast will store it this size
+            cast_bytes += n * itemsize
+    needed = int(cast_bytes * _PREFLIGHT_FACTOR[compression])
     free = shutil.disk_usage(cache_dir).free
     if free < needed + _PREFLIGHT_MARGIN_BYTES:
         raise NotEnoughSpaceError(
@@ -321,7 +339,7 @@ def split_model(
     weight_map = _load_weight_map(src_dir)
     adapter: ModelAdapter = resolve(model_class)
     plan: BlockPlan = adapter.block_plan(list(weight_map))
-    _preflight(cache_dir, src_dir, weight_map, compression)
+    _preflight(cache_dir, src_dir, weight_map, compression, dtype)
     logger.info(
         "Splitting %s (%s): %d blocks in %s -> %s",
         source,

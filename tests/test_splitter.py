@@ -136,9 +136,14 @@ def test_preflight_estimate_scales_with_compression(
     # Enough free space for a ~0.35x nf4 output, not for a 1.0x passthrough.
     free = int(src_bytes * 0.5) + sp._PREFLIGHT_MARGIN_BYTES
     monkeypatch.setattr(sp.shutil, "disk_usage", lambda _: usage._replace(free=free))
-    sp._preflight(tmp_path, src, weight_map, "nf4")  # fits
+    sp._preflight(tmp_path, src, weight_map, "nf4", None)  # fits
     with pytest.raises(NotEnoughSpaceError):
-        sp._preflight(tmp_path, src, weight_map, None)  # does not
+        sp._preflight(tmp_path, src, weight_map, None, None)  # does not
+    # fp32 source cast to bf16 halves the estimate: an uncompressed split that
+    # a file-size estimate would refuse actually fits (the Wan 14B case).
+    import torch
+
+    sp._preflight(tmp_path, src, weight_map, None, torch.bfloat16)
 
 
 def test_nf4_split_requires_cuda(flux_checkpoint, tmp_path: Path, monkeypatch) -> None:
