@@ -88,6 +88,47 @@ def _extra_transformer_components(
     )
 
 
+def _pipeline_allow_patterns(index: dict, passed: set[str]) -> list[str]:
+    """Hub-download patterns for ONLY the component folders diffusers will
+    actually load. Passing a component instance does NOT stop
+    DiffusionPipeline.from_pretrained's snapshot fetch from downloading that
+    component's folder — discovered when a freshly deleted 57 GB Wan 14B
+    checkpoint started re-downloading underneath a benchmark."""
+    patterns = ["model_index.json", "*.json"]
+    for name, spec in index.items():
+        if name.startswith("_") or not isinstance(spec, list) or not spec[-1]:
+            continue
+        if name in passed:
+            continue  # caller supplied it (a meta instance, or None to skip)
+        patterns.append(f"{name}/*")
+    return patterns
+
+
+def _local_pipeline_root(
+    model_id: str, passed: set[str], revision: str | None, token: str | None
+) -> str:
+    """A local directory containing exactly the pipeline pieces we need, or
+    `model_id` unchanged (local paths; any probe failure falls back to the
+    stock download path)."""
+    if Path(model_id).is_dir():
+        return model_id
+    try:
+        from huggingface_hub import hf_hub_download, snapshot_download
+
+        index_path = hf_hub_download(model_id, "model_index.json", revision=revision, token=token)
+        index = json.loads(Path(index_path).read_text(encoding="utf-8"))
+        root = snapshot_download(
+            model_id,
+            allow_patterns=_pipeline_allow_patterns(index, passed),
+            revision=revision,
+            token=token,
+        )
+        return root
+    except Exception as e:  # noqa: BLE001 — fall back to stock behaviour
+        logger.warning("Selective pipeline download failed (%s); using stock path", e)
+        return model_id
+
+
 def _resolve_dtype(name: str | torch.dtype) -> torch.dtype:
     if isinstance(name, torch.dtype):
         return name
@@ -249,10 +290,12 @@ class AirPipeline:
             extra_manifests[extra_name] = (extra_manifest, extra_cache)
 
         pipeline_kwargs.setdefault("torch_dtype", dtype)
+        passed = {"transformer", *pipeline_kwargs.keys()} - {"torch_dtype"}
+        pipeline_root = _local_pipeline_root(model_id, passed, revision, hf_token)
         pipeline = diffusers.DiffusionPipeline.from_pretrained(
-            model_id,
+            pipeline_root,
             transformer=transformer,
-            revision=revision,
+            revision=revision if pipeline_root == model_id else None,
             token=hf_token,
             **pipeline_kwargs,
         )

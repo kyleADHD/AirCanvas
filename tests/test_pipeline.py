@@ -380,3 +380,25 @@ def test_dispatched_encoders_are_never_moved() -> None:
     cuda = torch.device("cuda")
     assert te.resolve_te_device(pipe, names, cuda) == cuda
     te._move(pipe, names, "cpu")  # must not raise
+
+
+def test_pipeline_allow_patterns_exclude_passed_components() -> None:
+    """Passed components (meta transformers, None'd encoders) must be excluded
+    from the pipeline snapshot fetch — diffusers itself re-downloads them (the
+    deleted-57GB-checkpoint incident)."""
+    from aircanvas.api import _pipeline_allow_patterns
+
+    index = {
+        "_class_name": "WanPipeline",
+        "scheduler": ["diffusers", "UniPCMultistepScheduler"],
+        "text_encoder": ["transformers", "UMT5EncoderModel"],
+        "tokenizer": ["transformers", "AutoTokenizer"],
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    }
+    passed = {"transformer", "text_encoder", "tokenizer"}
+    patterns = _pipeline_allow_patterns(index, passed)
+    assert "scheduler/*" in patterns and "vae/*" in patterns
+    assert "transformer/*" not in patterns
+    assert "text_encoder/*" not in patterns and "tokenizer/*" not in patterns
+    assert "model_index.json" in patterns
