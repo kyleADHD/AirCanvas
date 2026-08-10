@@ -15,6 +15,7 @@ this workload, because that is who AirCanvas is for:
 | FLUX dev-equivalent 28-step | 12B | ~34 GB | ~14.1 s/step ≈ 7 min/image |
 | Qwen-Image (nf4 shards) | 20.4B | ~41 GB+ | 1024² 20-step: **427 s (~7.1 min)**; 50-step: 1034 s |
 | Wan 2.1 T2V (fp8 shards) | 1.3B | ~8 GB | 480×832×81f 20-step: 1046 s incl. decode |
+| **Wan 2.1 T2V (fp8 shards)** | **14B** | **~80 GB** | **480×832×81f 20-step: 10.6 h overnight — 562 GB streamed, 97.4% prefetched, survived a battery death mid-run** |
 
 Qwen-Image at 50 steps streams **1.07 TB of weights** through the 6 GB card
 for a single image, 97.5% of loads served by the prefetcher ahead of demand.
@@ -48,6 +49,17 @@ size, so the 14B ratio is expected to be at least as good.
 fp8 halves disk traffic and roughly halves step time when IO-bound; resident
 blocks help while IO-bound and stop mattering once compression makes the
 workload compute-bound — the budget solver's whole job.
+
+## The 14B footnote
+
+The 14B run (Aug 2026) completed unattended overnight at ~31.5 min/step.
+On THIS machine it is IO-bound: 28 GB of reads per step against a disk that
+delivers only tens of MB/s effective when the OS has ~0.5 GB of RAM free for
+cache — the box's chronic commit pressure, not the streaming design, sets
+the pace (the 1.3B measurement proves streaming itself costs 2%). With
+normal RAM and NVMe throughput the same run computes in the low hours. It
+also survived: a battery drain to 0%, a critical-battery sleep mid-step, and
+resume — the run completed correctly anyway.
 
 ## Honest misses
 
