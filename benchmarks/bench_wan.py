@@ -69,6 +69,12 @@ def main() -> None:
     ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--width", type=int, default=832)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--model", default=MODEL, help="any Wan-family diffusers repo")
+    ap.add_argument(
+        "--no-resident",
+        action="store_true",
+        help="skip the all-resident reference (models that cannot fit in VRAM, e.g. 14B)",
+    )
     args = ap.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
@@ -79,14 +85,18 @@ def main() -> None:
     te_less = {"text_encoder": None, "tokenizer": None}
     t0 = time.perf_counter()
     streamed_pipe = AirPipeline.from_pretrained(
-        MODEL, compression="fp8", max_resident_blocks=0, **te_less
+        args.model, compression="fp8", max_resident_blocks=0, **te_less
     )
     print(f"pipeline ready in {time.perf_counter() - t0:.1f}s")
     streamed = run(streamed_pipe, args, "streamed")
     del streamed_pipe
 
+    if args.no_resident:
+        print(f"\nstreamed-only run: {streamed:.2f}s/step (no in-VRAM reference possible)")
+        return
+
     resident_pipe = AirPipeline.from_pretrained(
-        MODEL, compression="fp8", max_resident_blocks=10_000, **te_less
+        args.model, compression="fp8", max_resident_blocks=10_000, **te_less
     )
     resident = run(resident_pipe, args, "resident")
 
