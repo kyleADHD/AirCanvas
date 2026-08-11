@@ -10,12 +10,25 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Kyle Hulley" }]
-keywords = ["diffusion", "flux", "wan", "video-generation", "low-vram", "offloading", "airllm"]
+keywords = [
+    "diffusion", "diffusers", "flux", "qwen-image", "wan", "hunyuanvideo",
+    "text-to-image", "text-to-video", "image-generation", "video-generation",
+    "low-vram", "offloading", "streaming", "quantization", "fp8", "nf4", "airllm",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 dependencies = [
     "torch>=2.4",
@@ -71,6 +84,10 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests import shared helpers as `from tests.conftest import ...`, which needs
+# the repo root on sys.path — true for `python -m pytest` but not the bare
+# `pytest` script (as CI runs it) without this.
+pythonpath = ["."]
 markers = [
     "gpu: tests requiring a CUDA GPU (deselected in CI; run with -m gpu)",
     "network: tests that download from the HF Hub (deselected by default; run with -m network)",
