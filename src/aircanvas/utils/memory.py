@@ -1,6 +1,6 @@
 """Cross-platform memory hygiene (M2).
 
-HARD RULE (CLAUDE.md): Windows is the primary dev machine. No libc
+HARD RULE (CONTRIBUTING.md): Windows is the primary dev machine. No libc
 malloc_trim (AirLLM's trick is Linux-only). The slot-pool design should make
 per-block cleanup unnecessary; this module is for phase BOUNDARIES only
 (after TE evict, before VAE decode) — never in the per-block hot loop.

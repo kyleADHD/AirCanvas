@@ -1,5 +1,5 @@
 """M2: the correctness gate — streamed output must be BITWISE-equal to a
-fully-materialized reference (CLAUDE.md hard rule)."""
+fully-materialized reference (hard rule, CONTRIBUTING.md)."""
 
 from pathlib import Path
 

@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# PRs from forks get a read-only token; nothing in CI needs write access.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:

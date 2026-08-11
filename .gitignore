@@ -20,6 +20,12 @@ venv/
 shard_cache/
 benchmarks/results/local/
 
+# AI-assistant working files — local only, never published
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+**/.claude/
+
 # OS / editor
 .DS_Store
 Thumbs.db

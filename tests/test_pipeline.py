@@ -249,7 +249,7 @@ def test_tiny_flux_end_to_end(tmp_path: Path, compression) -> None:
         assert pipe.manifest.model_class == "FluxTransformer2DModel"
         assert pipe.adapter.key == "flux"
         assert pipe.plan.resident_blocks == 0 and pipe.plan.streamed_blocks == 2
-        # The shard cache lives outside the repo (CLAUDE.md hard rule); here we
+        # The shard cache lives outside the repo (hard rule, CONTRIBUTING.md); here we
         # pinned it to tmp_path, so just confirm nothing landed in the package.
         assert not list(Path(__file__).resolve().parents[1].glob("**/*.safetensors"))
 

@@ -1,0 +1,39 @@
+name: Bug report
+description: Something crashed, hung, or produced wrong output
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: >
+        If generation succeeded but the output looks wrong/corrupted, say so
+        explicitly — silent-corruption reports get top priority.
+      placeholder: What did you run, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: aircanvas doctor output
+      description: Paste the full output — it captures VRAM/RAM/disk/OS in one shot.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Exact command or Python snippet
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Full traceback / log
+      render: text
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: e.g. Qwen/Qwen-Image, nf4 shards

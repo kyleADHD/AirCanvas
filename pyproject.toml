@@ -40,7 +40,11 @@ dev = [
 aircanvas = "aircanvas.cli:main"
 
 [project.urls]
-Documentation = "https://github.com/kyleADHD/AirCanvas"
+Homepage = "https://github.com/kyleADHD/AirCanvas"
+Repository = "https://github.com/kyleADHD/AirCanvas"
+Documentation = "https://github.com/kyleADHD/AirCanvas#readme"
+Issues = "https://github.com/kyleADHD/AirCanvas/issues"
+Changelog = "https://github.com/kyleADHD/AirCanvas/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aircanvas"]

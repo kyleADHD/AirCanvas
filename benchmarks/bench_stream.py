@@ -5,7 +5,7 @@ Usage: python benchmarks/bench_stream.py [--dim 2048] [--blocks 24] [--steps 4]
                                          [--dtype bfloat16] [--compression fp8]
                                          [--resident 4]
 Writes its checkpoint + shard cache under --workdir (default: system temp —
-NEVER the repo; see CLAUDE.md).
+NEVER the repo; see CONTRIBUTING.md).
 
 M4 additions: `--compression fp8` measures the fp8 shard path (half the disk
 traffic, plus a per-block upcast and a second slot pool — ADR #8), and
