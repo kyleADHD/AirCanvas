@@ -213,39 +213,55 @@ steps are so compute-heavy the streaming hides completely). Its promise is
 different: the model **runs at all**, correctly, with the bottleneck measured
 and printed by `pipe.report()`.
 
-### 2. Does streaming change the output?
+### 2. I have a big GPU (16–24 GB+) — is AirCanvas still useful?
+
+Yes, and nothing about it is "small-GPU mode." The budget solver spends
+whatever VRAM it finds: on a large card it pins most or all blocks
+permanently resident, streaming quietly shrinks toward zero, and step times
+converge to native full-VRAM execution — same one-line API. You can also
+drop compression entirely (`compression=None`, bitwise-identical output)
+and raise resolution/frame counts, since activations get the leftover room.
+
+The deeper reason: VRAM only ever needs to hold the *largest block* (~0.3–1
+GB even for 20B+ models), not the model. So when models outgrow your card
+again — and they will — the same command keeps working. A 40B video DiT
+that fits no consumer card would stream on a 24 GB card the same way 20B
+streams on 6 GB today. Run `aircanvas doctor` to see exactly what your
+card would pin resident vs stream for each supported model.
+
+### 3. Does streaming change the output?
 
 No. Streamed output is **bitwise-equal** to full-VRAM execution with
 `compression=None` — enforced by the test suite and demonstrated
 byte-identical on real video. fp8/NF4 introduce only the usual quantization
 tolerance, applied once at split time.
 
-### 3. Where do the shards go, and how big are they?
+### 4. Where do the shards go, and how big are they?
 
 In a persistent cache under your HF cache home (override with
 `shard_cache=`), never inside the repo. Size ≈ the transformer at the chosen
 precision (roughly ½ for fp8, ¼ for NF4). After splitting you can delete the
 original checkpoint.
 
-### 4. I got an out-of-memory error
+### 5. I got an out-of-memory error
 
 `InsufficientVRAMError` prints the exact plan the solver attempted. The usual
 ladder: enable `compression="fp8"` (or `"nf4"`), lower resolution/frames, or
 set an explicit `vram_budget` below what other apps are using.
 
-### 5. NF4 says it requires CUDA
+### 6. NF4 says it requires CUDA
 
 Correct — NF4 shards use bitsandbytes' dequantization kernels, which are
 CUDA-only. This is enforced with a clear error at split *and* load. Use
 `"fp8"` on non-CUDA setups.
 
-### 6. Do I need an NVMe drive?
+### 7. Do I need an NVMe drive?
 
 Strongly recommended. The budget solver measures your disk's real bandwidth
 and warns when a SATA drive (or a distilled few-step model, which hides IO
 less) will make streaming the bottleneck.
 
-### 7. How do I use gated models like FLUX.1-dev or SD3.5?
+### 8. How do I use gated models like FLUX.1-dev or SD3.5?
 
 First accept the model's license on its Hugging Face page (a token alone
 still gets a 403), then authenticate the machine either way:
@@ -260,7 +276,7 @@ on the same ambient login). The token is only needed for the first download:
 after the one-time split the shard cache is self-contained, so the original
 checkpoint can be deleted and generation runs fully offline.
 
-### 8. Does it work on Windows?
+### 9. Does it work on Windows?
 
 Windows is the *primary* development machine — OneDrive-safe paths,
 no-`mmap`-under-commit-pressure fallbacks, and cross-platform memory probing
