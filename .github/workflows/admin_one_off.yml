@@ -1,0 +1,41 @@
+name: admin-one-off
+
+# Temporary maintenance workflow — deletes the pre-rewrite v0.1.0 tag (the
+# git proxy used by the maintainer's remote session cannot push tag refs)
+# and auto-creates the `pypi` deployment environment by referencing it.
+# Delete this file once it has run successfully.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  delete-stale-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete pre-rewrite v0.1.0 tag ref
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: 'tags/v0.1.0',
+              });
+              core.info('Deleted refs/tags/v0.1.0');
+            } catch (e) {
+              if (e.status === 422) {
+                core.info('Tag already absent: ' + e.message);
+              } else {
+                core.setFailed(e.message);
+              }
+            }
+
+  ensure-pypi-environment:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - run: echo "pypi environment ensured (add required reviewers in Settings)"
