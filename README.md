@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/aircanvas_logo_dark.svg">
-    <img alt="AirCanvas" src="assets/aircanvas_logo.svg" width="450">
+    <img alt="AirCanvas" src="assets/aircanvas_logo.svg" width="260">
   </picture>
 </p>
 
