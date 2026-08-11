@@ -245,7 +245,22 @@ Strongly recommended. The budget solver measures your disk's real bandwidth
 and warns when a SATA drive (or a distilled few-step model, which hides IO
 less) will make streaming the bottleneck.
 
-### 7. Does it work on Windows?
+### 7. How do I use gated models like FLUX.1-dev or SD3.5?
+
+First accept the model's license on its Hugging Face page (a token alone
+still gets a 403), then authenticate the machine either way:
+
+```bash
+hf auth login    # one-time; picked up automatically (older hub: huggingface-cli login)
+aircanvas run black-forest-labs/FLUX.1-dev -p "..." --hf-token hf_xxx  # or explicit
+```
+
+In Python, pass `hf_token="hf_..."` to `AirPipeline.from_pretrained` (or rely
+on the same ambient login). The token is only needed for the first download:
+after the one-time split the shard cache is self-contained, so the original
+checkpoint can be deleted and generation runs fully offline.
+
+### 8. Does it work on Windows?
 
 Windows is the *primary* development machine — OneDrive-safe paths,
 no-`mmap`-under-commit-pressure fallbacks, and cross-platform memory probing

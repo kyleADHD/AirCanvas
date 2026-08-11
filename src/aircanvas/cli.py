@@ -255,6 +255,7 @@ def _run(args: argparse.Namespace) -> int:
         compression=compression,
         shard_cache=args.cache_dir,
         compute_dtype=args.compute_dtype,
+        hf_token=args.hf_token,
     )
     result = pipe(
         args.prompt,
@@ -294,6 +295,11 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument(
         "--hash", action="store_true", dest="hash_shards", help="Record sha256 per shard (slower)"
     )
+    sp.add_argument(
+        "--hf-token",
+        default=None,
+        help="Hugging Face token for gated models (defaults to your hf auth login / HF_TOKEN)",
+    )
 
     rp = sub.add_parser("run", help="Generate with a streamed pipeline")
     rp.add_argument("source", help="HF repo id or local path")
@@ -307,6 +313,11 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--compute-dtype", default="bfloat16")
     rp.add_argument("--vram-budget", default="auto")
     rp.add_argument("--ram-budget", default="auto")
+    rp.add_argument(
+        "--hf-token",
+        default=None,
+        help="Hugging Face token for gated models (defaults to your hf auth login / HF_TOKEN)",
+    )
 
     dp = sub.add_parser("doctor", help="Probe hardware and report runnable models")
     dp.add_argument(
@@ -333,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
             revision=args.revision,
             compute_dtype=None if args.compute_dtype == "source" else args.compute_dtype,
             hash_shards=args.hash_shards,
+            hf_token=args.hf_token,
         )
         cache = args.cache_dir or shard_cache_dir(
             args.source, args.subfolder, compression, manifest.compute_dtype
