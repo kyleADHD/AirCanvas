@@ -66,7 +66,7 @@ def shard_cache_dir(
     compute_dtype: str | None = "bfloat16",
 ) -> Path:
     """Default persistent cache location. Deliberately under the HF cache home
-    (never the repo/OneDrive — CLAUDE.md hard rule)."""
+    (never the repo/OneDrive — hard rule, CONTRIBUTING.md)."""
     tag = compression or (compute_dtype or "source")
     return cache_root() / safe_slug(source) / subfolder / tag
 

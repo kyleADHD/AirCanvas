@@ -29,8 +29,8 @@ def cache_root() -> Path:
     """Root of every AirCanvas on-disk artifact (shards, embeddings, probes).
 
     Deliberately under the HF cache home and NEVER inside the repo: the dev
-    checkout is OneDrive-synced and shard caches are tens of GB (CLAUDE.md
-    hard rule).
+    checkout is OneDrive-synced and shard caches are tens of GB (hard rule,
+    CONTRIBUTING.md).
     """
     hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
     return hf_home / "aircanvas"

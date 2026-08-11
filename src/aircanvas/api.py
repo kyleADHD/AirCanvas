@@ -13,7 +13,7 @@ StreamingEngine, VAE pulled in for decode only.
 
 1. **Find or create the shard cache.** The DiT subfolder is downloaded (weights
    only) and split into per-block shards on first use; later runs reuse it.
-   Nothing is ever written inside the repo (CLAUDE.md hard rule).
+   Nothing is ever written inside the repo (hard rule, CONTRIBUTING.md).
 2. **Probe hardware and solve the budget** (utils/hw.py + streaming/residency.py)
    to get resident-block count, slot pool, and ring depth.
 3. **Instantiate the DiT on meta** from the checkpoint's own config, and hand

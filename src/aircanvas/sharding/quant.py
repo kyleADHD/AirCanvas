@@ -30,7 +30,7 @@ the block's safetensors file:
 
 Reconstruction is ``payload.to(compute_dtype) * scale`` — one dtype-converting
 copy plus one in-place multiply, both expressible against pre-allocated
-destination buffers (no allocation in the hot loop, CLAUDE.md hard rule; see
+destination buffers (no allocation in the hot loop — hard rule; see
 ADR #8 and streaming/prefetch.py).
 
 The scale matters: ``float8_e4m3fn`` denormalises below 2^-6 (0.0156), and DiT

@@ -2,8 +2,8 @@
 
   NVMe --worker thread--> pinned CPU ring --dedicated CUDA copy stream--> GPU slots
 
-All buffers are allocated ONCE at construction (CLAUDE.md hard rule: no GPU or
-pinned allocations in the per-block hot loop):
+All buffers are allocated ONCE at construction (hard rule, CONTRIBUTING.md: no
+GPU or pinned allocations in the per-block hot loop):
 
 - The worker reads a shard's raw data blob straight into a pinned ring buffer
   (`readinto`, GIL released) and builds zero-copy tensor views by parsing the

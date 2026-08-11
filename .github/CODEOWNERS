@@ -1,0 +1,3 @@
+# Every path requires maintainer review. Pairs with the branch-protection
+# setting "Require review from Code Owners" so no PR merges without approval.
+* @kyleADHD
