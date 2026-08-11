@@ -57,10 +57,17 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
+# No python_version pin: mypy checks under the running interpreter, so new
+# numpy stubs (PEP 695 `type` statements, 3.12+) parse on modern Pythons;
+# 3.10-syntax compatibility is enforced by ruff's target-version instead.
 [tool.mypy]
-python_version = "3.10"
 strict = false
 check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# Optional [nf4] extra — absent in CI and on non-CUDA boxes by design.
+module = ["bitsandbytes", "bitsandbytes.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
