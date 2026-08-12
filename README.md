@@ -22,10 +22,8 @@
   <a href="https://github.com/kyleADHD/AirCanvas/actions/workflows/ci.yml"><img src="https://github.com/kyleADHD/AirCanvas/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/Code%20License-Apache_2.0-green.svg" alt="Code License"></a>
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+">
-  <!-- Uncomment after the first PyPI release:
   <a href="https://pypi.org/project/aircanvas/"><img src="https://img.shields.io/pypi/v/aircanvas" alt="PyPI"></a>
   <a href="https://pepy.tech/project/aircanvas"><img src="https://static.pepy.tech/badge/aircanvas" alt="Downloads"></a>
-  -->
 </p>
 
 Measured, not promised: a 20.4B **Qwen-Image** generating 1024² images on a
@@ -81,9 +79,9 @@ steps are so compute-heavy the transfer vanishes entirely.
 ### 1. Install
 
 ```bash
-pip install -e .            # from source (PyPI release pending)
-pip install -e .[nf4]       # + bitsandbytes for NF4 shards (CUDA required)
-pip install -e .[dev]       # + test/lint tooling for contributors
+pip install aircanvas            # from PyPI
+pip install "aircanvas[nf4]"     # + bitsandbytes for NF4 shards (CUDA required)
+pip install -e .[dev]            # from a clone, for contributors
 ```
 
 Windows and Linux; Python ≥ 3.10; torch ≥ 2.4; diffusers ≥ 0.35. Developed
