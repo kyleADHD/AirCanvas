@@ -64,10 +64,15 @@ def shard_cache_dir(
     subfolder: str = "transformer",
     compression: Compression = None,
     compute_dtype: str | None = "bfloat16",
+    gguf_file: str | None = None,
 ) -> Path:
     """Default persistent cache location. Deliberately under the HF cache home
-    (never the repo/OneDrive — hard rule, CONTRIBUTING.md)."""
+    (never the repo/OneDrive — hard rule, CONTRIBUTING.md). A GGUF source gets
+    its own tag: caches split from different quant files must never collide."""
     tag = compression or (compute_dtype or "source")
+    if gguf_file is not None:
+        stem = Path(str(gguf_file).rsplit(":", 1)[-1]).stem
+        tag = f"{tag}-gguf-{safe_slug(stem)}"
     return cache_root() / safe_slug(source) / subfolder / tag
 
 
@@ -99,6 +104,29 @@ def _resolve_source(
     if not src.is_dir():
         raise FileNotFoundError(f"{source} has no '{subfolder}/' subfolder")
     return src
+
+
+def _model_class_from_config(
+    source: str, subfolder: str, revision: str | None, hf_token: str | None
+) -> str:
+    """Model class from the checkpoint's config.json — fetched ALONE for GGUF
+    sources, so pointing at a 24 GB repo downloads a few KB, not the weights."""
+    p = Path(source)
+    for cand in (p / subfolder / "config.json", p / "config.json"):
+        if cand.is_file():
+            text = cand.read_text(encoding="utf-8")
+            break
+    else:
+        from huggingface_hub import hf_hub_download  # lazy: local paths need no hub
+
+        text = Path(
+            hf_hub_download(source, f"{subfolder}/config.json", revision=revision, token=hf_token)
+        ).read_text(encoding="utf-8")
+    config = json.loads(text)
+    model_class = config.get("_class_name") or next(iter(config.get("architectures", [])), None)
+    if not model_class:
+        raise ValueError(f"config.json for {source}/{subfolder} names no model class")
+    return str(model_class)
 
 
 def _load_weight_map(src_dir: Path) -> dict[str, str]:
@@ -259,6 +287,10 @@ def _preflight(
             if dtype is not None and m.dtype.is_floating_point and itemsize >= 2:
                 itemsize = dtype.itemsize  # _maybe_cast will store it this size
             cast_bytes += n * itemsize
+    _check_space(cache_dir, cast_bytes, compression)
+
+
+def _check_space(cache_dir: Path, cast_bytes: int, compression: Compression) -> None:
     needed = int(cast_bytes * _PREFLIGHT_FACTOR[compression])
     free = shutil.disk_usage(cache_dir).free
     if free < needed + _PREFLIGHT_MARGIN_BYTES:
@@ -278,8 +310,14 @@ def split_model(
     compute_dtype: str | None = "bfloat16",
     hash_shards: bool = False,
     hf_token: str | None = None,
+    gguf_file: str | None = None,
 ) -> Manifest:
-    """Find-or-create the shard cache for `source`; return its manifest."""
+    """Find-or-create the shard cache for `source`; return its manifest.
+
+    With `gguf_file` (a local .gguf path or 'repo_id:filename'), tensors come
+    from the quantized GGUF — dequantized once here, resharded into the chosen
+    codec — and only `source`'s config.json is fetched, never its weights.
+    """
     dtype = _torch_dtype(compute_dtype)
     # `_torch_dtype` maps None/"none"/"source" to None, so a real dtype here
     # implies `compute_dtype` was a real name.
@@ -297,7 +335,7 @@ def split_model(
                 "compression='nf4' requires CUDA at split time (bitsandbytes quantizes on GPU)"
             )
 
-    cache_dir = cache_dir or shard_cache_dir(source, subfolder, compression, dtype_tag)
+    cache_dir = cache_dir or shard_cache_dir(source, subfolder, compression, dtype_tag, gguf_file)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # FAST PATH before touching the source: a complete cache must be reusable
@@ -307,26 +345,37 @@ def split_model(
     existing: Manifest | None = None
     if (cache_dir / MANIFEST_NAME).is_file():
         existing = Manifest.load(cache_dir)
-        if not existing.compatible_with(
-            compression=compression, compute_dtype=dtype_tag, model_class=existing.model_class
+        if (
+            not existing.compatible_with(
+                compression=compression, compute_dtype=dtype_tag, model_class=existing.model_class
+            )
+            or existing.gguf_file != gguf_file
         ):
             raise ValueError(
                 f"Shard cache {cache_dir} was built with "
                 f"(compression={existing.compression}, dtype={existing.compute_dtype}, "
-                f"class={existing.model_class}) — pass a different cache_dir or delete it."
+                f"class={existing.model_class}, gguf={existing.gguf_file}) — pass a "
+                f"different cache_dir or delete it."
             )
         if existing.is_complete(cache_dir):
             logger.info("Reusing complete shard cache at %s (source not touched)", cache_dir)
             return existing
 
-    src_dir = _resolve_source(source, subfolder, revision, hf_token)
-    config = json.loads((src_dir / "config.json").read_text(encoding="utf-8"))
-    # diffusers configs carry _class_name; transformers configs carry
-    # architectures — text encoders are streamable transformers too (a 16 GB
-    # box cannot even LOAD Wan's 11.4 GB UMT5, but it can stream it).
-    model_class = config.get("_class_name") or next(iter(config.get("architectures", [])), None)
-    if not model_class:
-        raise ValueError(f"{src_dir / 'config.json'} names no model class")
+    if gguf_file is not None:
+        from aircanvas.sharding import gguf_source
+
+        gguf_path = gguf_source.resolve_gguf_path(gguf_file, revision=revision, hf_token=hf_token)
+        model_class = _model_class_from_config(source, subfolder, revision, hf_token)
+    else:
+        src_dir = _resolve_source(source, subfolder, revision, hf_token)
+        config = json.loads((src_dir / "config.json").read_text(encoding="utf-8"))
+        # diffusers configs carry _class_name; transformers configs carry
+        # architectures — text encoders are streamable transformers too (a 16 GB
+        # box cannot even LOAD Wan's 11.4 GB UMT5, but it can stream it).
+        found = config.get("_class_name") or next(iter(config.get("architectures", [])), None)
+        if not found:
+            raise ValueError(f"{src_dir / 'config.json'} names no model class")
+        model_class = str(found)
 
     if existing is not None:
         if existing.model_class != model_class:
@@ -336,10 +385,37 @@ def split_model(
             )
         logger.warning("Shard cache at %s is incomplete — repairing", cache_dir)
 
-    weight_map = _load_weight_map(src_dir)
     adapter: ModelAdapter = resolve(model_class)
-    plan: BlockPlan = adapter.block_plan(list(weight_map))
-    _preflight(cache_dir, src_dir, weight_map, compression, dtype)
+    if gguf_file is not None:
+        ckpt: gguf_source.TensorSource = gguf_source.GGUFCheckpoint(gguf_path)
+        names = ckpt.tensor_names()
+        plan: BlockPlan = adapter.block_plan(names)
+        if not gguf_source.plan_covers(plan, names):
+            # Foreign key layout (e.g. BFL-style FLUX ggufs): let diffusers'
+            # single-file loader do the renames, then re-plan.
+            ckpt = gguf_source.DiffusersGGUFCheckpoint(
+                gguf_path, model_class, source, subfolder, revision, hf_token, dtype
+            )
+            names = ckpt.tensor_names()
+            plan = adapter.block_plan(names)
+            if not gguf_source.plan_covers(plan, names):
+                raise gguf_source.GGUFError(
+                    f"{gguf_path.name}: tensor names match neither {model_class}'s "
+                    "state dict nor a layout diffusers can convert."
+                )
+        _check_space(cache_dir, ckpt.materialized_bytes(dtype), compression)
+
+        def gather(ns: tuple[str, ...]) -> dict[str, torch.Tensor]:
+            return ckpt.gather(ns, dtype)
+
+    else:
+        weight_map = _load_weight_map(src_dir)
+        plan = adapter.block_plan(list(weight_map))
+        _preflight(cache_dir, src_dir, weight_map, compression, dtype)
+
+        def gather(ns: tuple[str, ...]) -> dict[str, torch.Tensor]:
+            return _gather(src_dir, weight_map, ns, dtype)
+
     logger.info(
         "Splitting %s (%s): %d blocks in %s -> %s",
         source,
@@ -371,7 +447,7 @@ def split_model(
                 )
             )
             continue
-        tensors = _gather(src_dir, weight_map, plan.tensors_by_block[block], dtype)
+        tensors = gather(plan.tensors_by_block[block])
         load_bytes = _materialized_bytes(tensors)
         stored, quant_meta = quant.compress_state_dict(tensors, compression)
         n_bytes, digest = _write_shard(
@@ -394,7 +470,7 @@ def split_model(
         resident_bytes = (cache_dir / resident_fname).stat().st_size
         resident_load_bytes = None
     else:
-        tensors = _gather(src_dir, weight_map, plan.resident_tensors, dtype)
+        tensors = gather(plan.resident_tensors)
         resident_load_bytes = _materialized_bytes(tensors)
         resident_bytes, _ = _write_shard(
             cache_dir, resident_fname, tensors, {**meta_common, "block": "resident"}, hash_shards
@@ -412,6 +488,7 @@ def split_model(
         resident_file=resident_fname,
         resident_bytes=resident_bytes,
         resident_load_bytes=resident_load_bytes,
+        gguf_file=gguf_file,
     )
     manifest.save(cache_dir)
     disk = manifest.disk_bytes()

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 — Unreleased
+
+- **GGUF sources** (`aircanvas[gguf]` extra): `aircanvas split <repo>
+  --gguf-file <local.gguf | repo_id:filename>` — and `gguf_file=` on
+  `AirPipeline.from_pretrained` — split directly from a quantized GGUF
+  checkpoint. Only the source repo's config.json is fetched, so a FLUX-class
+  model costs a ~7 GB Q4_K download instead of ~24 GB. Tensors are
+  dequantized once at split time into the existing verified codecs
+  (none/fp8/nf4); model-native layouts stream through a lazy mmap reader
+  (peak RAM: one tensor), BFL-style FLUX layouts convert via diffusers'
+  single-file loader. GGUF caches get their own shard-cache tag and manifest
+  provenance, and the streaming hot path is untouched.
+- CLI: `--hf-token` on `split`/`run` for gated models (ambient
+  `hf auth login` / `HF_TOKEN` still works).
+- Packaging: `py.typed` marker; PyPI classifiers/keywords; mypy runs under
+  the ambient interpreter with optional deps overridden.
+
 ## 0.1.0 — 2026-08-08
 
 First working release. Everything below was verified on a 6 GB RTX 4050

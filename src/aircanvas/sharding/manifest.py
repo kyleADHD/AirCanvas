@@ -52,6 +52,9 @@ class Manifest:
     # per-timestep switching rule; None for dense models.
     expert_groups: dict[str, list[int]] | None = None
     resident_load_bytes: int | None = None
+    # Set when the cache was split from a quantized GGUF checkpoint instead of
+    # the original weights: the local path or 'repo_id:filename' as given.
+    gguf_file: str | None = None
     manifest_version: int = MANIFEST_VERSION
 
     def save(self, cache_dir: Path) -> None:

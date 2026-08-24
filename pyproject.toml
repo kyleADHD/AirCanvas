@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aircanvas"
-version = "0.1.0"
+version = "0.2.0"
 description = "Run 20B+ image & video diffusion models on 4-8 GB GPUs by streaming quantized model blocks from disk."
 readme = "README.md"
 license = "Apache-2.0"
@@ -42,11 +42,13 @@ dependencies = [
 
 [project.optional-dependencies]
 nf4 = ["bitsandbytes>=0.45"]
+gguf = ["gguf>=0.10"]
 video = ["imageio[ffmpeg]"]
 dev = [
     "pytest>=8",
     "ruff>=0.8",
     "mypy>=1.13",
+    "gguf>=0.10",
 ]
 
 [project.scripts]
@@ -78,9 +80,17 @@ strict = false
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-# Optional [nf4] extra — absent in CI and on non-CUDA boxes by design.
-module = ["bitsandbytes", "bitsandbytes.*"]
+# bitsandbytes/gguf are optional extras (absent on many boxes by design).
+module = ["bitsandbytes", "bitsandbytes.*", "gguf", "gguf.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Don't type-check inside diffusers/accelerate/transformers: they are runtime
+# dependencies we wrap, not code we gate. Following them drags their entire
+# (partially typed) surface into our strict core check.
+module = ["diffusers", "diffusers.*", "accelerate", "accelerate.*", "transformers", "transformers.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
