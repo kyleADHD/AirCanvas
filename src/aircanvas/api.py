@@ -252,6 +252,7 @@ class AirPipeline:
         prefetch: bool = True,
         cache_embeddings: bool = True,
         hf_token: str | None = None,
+        gguf_file: str | None = None,
         text_encoder_device: torch.device | str | None = None,
         **pipeline_kwargs: Any,
     ) -> AirPipeline:
@@ -267,7 +268,7 @@ class AirPipeline:
         cache_dir = (
             Path(shard_cache)
             if shard_cache is not None
-            else shard_cache_dir(model_id, subfolder, compression, dtype_name)
+            else shard_cache_dir(model_id, subfolder, compression, dtype_name, gguf_file)
         )
         manifest = split_model(
             model_id,
@@ -277,6 +278,7 @@ class AirPipeline:
             revision=revision,
             compute_dtype=dtype_name,
             hf_token=hf_token,
+            gguf_file=gguf_file,
         )
         adapter = resolve(manifest.model_class)
 
