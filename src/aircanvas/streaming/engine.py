@@ -30,6 +30,8 @@ M4 adds two things:
 Correctness gate: streamed output must be bitwise-equal to a fully
 materialized reference at `compression=None` (tests/test_engine.py,
 tests/test_prefetch.py); within quant tolerance for fp8 (tests/test_quant.py).
+With a LoRA loaded, the reference is the same model after
+`W += scale * up @ down` (tests/test_lora.py).
 Assumes each block executes at most once per forward (true for all target
 DiTs; weight-tied reuse would need eviction moved to end-of-forward).
 """
@@ -45,6 +47,7 @@ import torch
 from torch import nn
 
 from aircanvas.config import StreamConfig
+from aircanvas.lora import LoraOverlay
 from aircanvas.sharding.manifest import BlockShard, Manifest
 from aircanvas.streaming.prefetch import (
     DecompressPlan,
@@ -99,6 +102,7 @@ class StreamingEngine:
         validate: bool = True,
         resident_blocks: int = 0,
         ram_cache_bytes: int = 0,
+        lora: LoraOverlay | None = None,
     ) -> None:
         self.model = model
         self.manifest = manifest
@@ -146,7 +150,14 @@ class StreamingEngine:
             "slot_bytes": 0,
             "pinned_bytes": 0,
             "ram_cache_hits": 0,
+            "lora_fusions": 0,
+            "lora_bytes": 0,
         }
+
+        if lora:
+            lora.materialize(self.device, self._infer_weight_dtype())
+            self.stats["lora_bytes"] = lora.nbytes()
+        self._lora = lora if lora else None
 
         if not manifest.is_complete(self.cache_dir):
             raise StreamingError(
@@ -230,6 +241,11 @@ class StreamingEngine:
                 f"slot pool          {s['slot_bytes'] / 1e9:.2f} GB device, "
                 f"{s['pinned_bytes'] / 1e9:.2f} GB pinned host"
             )
+        if s["lora_bytes"]:
+            lines.append(
+                f"LoRA               {s['lora_bytes'] / 1e6:.1f} MB resident, "
+                f"{int(s['lora_fusions'])} in-place fusions"
+            )
         return "\n".join(lines)
 
     # -- setup -------------------------------------------------------------
@@ -257,14 +273,51 @@ class StreamingEngine:
         plan.run(src, dst)
         return plan.views(dst)
 
+    def _infer_weight_dtype(self) -> torch.dtype:
+        """Dtype LoRA A/B must match so ``addmm_`` does not allocate or cast.
+
+        Compressed caches record this in the manifest. Uncompressed
+        ``compute_dtype=source`` caches do not — we peek at the resident
+        shard header (no tensor data) and take the first 2-D float.
+        """
+        if self._compute_dtype is not None:
+            return self._compute_dtype
+        try:
+            dtype = self.manifest.torch_compute_dtype()
+        except ValueError:
+            dtype = None
+        if isinstance(dtype, torch.dtype):
+            return dtype
+        header = ShardHeader.parse(self.cache_dir / self.manifest.resident_file)
+        for meta in header.tensors:
+            if len(meta.shape) == 2 and meta.dtype.is_floating_point:
+                return meta.dtype
+        return torch.float32
+
+    def _fuse(self, tensors: dict[str, torch.Tensor]) -> None:
+        """Apply the LoRA overlay in-place. No-op when none is loaded.
+
+        Called after dequant (or a raw load) and before the tensors are bound,
+        so fp8/NF4 shards see the adapter against compute-dtype weights — the
+        only composition that is correct. ``LoraOverlay.apply`` is addmm_ into
+        storage we already own (CONTRIBUTING.md hot-loop rule).
+        """
+        if self._lora is None:
+            return
+        self.stats["lora_fusions"] += self._lora.apply(tensors)
+
     def _load_resident(self) -> None:
-        for name, t in self._materialize(self.cache_dir / self.manifest.resident_file).items():
+        tensors = self._materialize(self.cache_dir / self.manifest.resident_file)
+        self._fuse(tensors)
+        for name, t in tensors.items():
             _set_tensor(self.model, name, t)
 
     def _bind_resident_blocks(self) -> None:
         """Pin the budget solver's chosen blocks on the device for the whole run."""
         for shard in self._resident_blocks:
-            for name, t in self._materialize(self.cache_dir / shard.file).items():
+            tensors = self._materialize(self.cache_dir / shard.file)
+            self._fuse(tensors)
+            for name, t in tensors.items():
                 _set_tensor(self.model, name, t)
         if self._resident_blocks:
             logger.info(
@@ -347,6 +400,7 @@ class StreamingEngine:
             self.stats["sync_load_s"] += time.perf_counter() - t0
             self.stats["sync_loads"] += 1
 
+        self._fuse(tensors)
         if shard.name not in self._validated:
             self._validate_shard(shard, module, tensors)
         for name, t in tensors.items():

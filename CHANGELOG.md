@@ -2,6 +2,16 @@
 
 ## 0.2.0 — Unreleased
 
+- **LoRA loading onto quantized shards** (M10): `pipe.load_lora(source, scale=1.0)`
+  — and `lora=` on `AirPipeline.from_pretrained` / `aircanvas run --lora` —
+  fuses PEFT and kohya `.safetensors` adapters **after dequant**, in-place,
+  into the compute-dtype views the engine is about to bind. fp8/NF4 shard
+  caches keep working: the adapter never touches the quantized payload.
+  Multiple adapters stack; `unload_lora` / `set_lora_scale` take effect on
+  the next generate. Text-encoder keys are skipped (TEs are load-run-evict).
+  Fusion is `addmm_` into already-owned slot storage, so the no-allocation
+  hot-loop rule holds. Streamed output with a LoRA is bitwise-equal to a
+  fully-materialized reference with the same `W += scale * up @ down`.
 - **GGUF sources** (`aircanvas[gguf]` extra): `aircanvas split <repo>
   --gguf-file <local.gguf | repo_id:filename>` — and `gguf_file=` on
   `AirPipeline.from_pretrained` — split directly from a quantized GGUF

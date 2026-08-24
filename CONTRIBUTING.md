@@ -18,7 +18,7 @@ Verify your environment before changing anything:
 ```bash
 pytest                    # offline CPU suite — green on any machine, no GPU, no network
 ruff check . && ruff format --check .
-mypy src/aircanvas/sharding src/aircanvas/streaming
+mypy src/aircanvas/sharding src/aircanvas/streaming src/aircanvas/lora.py
 ```
 
 Two opt-in test tiers exist for changes that touch them:
@@ -53,8 +53,8 @@ good the speedup. Code comments across the repo cite this list.
 7. **Crash-safe cache writes.** Shards are written temp-file → rename +
    `.done` marker, manifest last. A missing marker means "re-split this
    shard" — never assume a partial write is valid.
-8. **Type hints everywhere.** `mypy` must stay clean in `sharding/` and
-   `streaming/` (the correctness-critical core).
+8. **Type hints everywhere.** `mypy` must stay clean in `sharding/`,
+   `streaming/`, and `lora.py` (the correctness-critical core).
 
 ## Pull request process
 

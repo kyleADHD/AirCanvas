@@ -34,6 +34,7 @@ import torch
 
 from aircanvas.adapters import ModelAdapter, resolve
 from aircanvas.config import Compression, cache_root, parse_size, safe_slug
+from aircanvas.lora import LoraOverlay
 from aircanvas.runtime.orchestrator import Orchestrator, PhaseStats, meta_transformer
 from aircanvas.sharding.manifest import Manifest
 from aircanvas.sharding.splitter import shard_cache_dir, split_model
@@ -206,6 +207,7 @@ class AirPipeline:
         max_resident_blocks: int | None = None,
         text_encoder_device: torch.device | str | None = None,
         extra_manifests: dict[str, tuple[Manifest, Path]] | None = None,
+        lora: LoraOverlay | None = None,
     ) -> None:
         self.pipeline = pipeline
         self.manifest = manifest
@@ -219,6 +221,7 @@ class AirPipeline:
         self._vram_budget = vram_budget
         self._ram_budget = ram_budget
         self._max_resident_blocks = max_resident_blocks
+        self._lora = lora or LoraOverlay()
         self._orchestrator = Orchestrator(
             pipeline,
             manifest=manifest,
@@ -230,6 +233,7 @@ class AirPipeline:
             prefetch=prefetch,
             text_encoder_device=text_encoder_device,
             extra_manifests=extra_manifests,
+            lora=self._lora,
         )
 
     # -- construction ------------------------------------------------------
@@ -254,6 +258,9 @@ class AirPipeline:
         hf_token: str | None = None,
         gguf_file: str | None = None,
         text_encoder_device: torch.device | str | None = None,
+        lora: str | Path | None = None,
+        lora_scale: float = 1.0,
+        lora_weight_name: str | None = None,
         **pipeline_kwargs: Any,
     ) -> AirPipeline:
         """Resolve budgets, find-or-create the shard cache, build the pipeline."""
@@ -356,6 +363,15 @@ class AirPipeline:
         embed_cache = None
         if cache_embeddings:
             embed_cache = cache_root() / safe_slug(model_id) / "embeddings"
+        overlay = LoraOverlay()
+        if lora is not None:
+            overlay.load(
+                lora,
+                scale=lora_scale,
+                weight_name=lora_weight_name,
+                revision=revision,
+                hf_token=hf_token,
+            )
         return cls(
             pipeline,
             manifest=manifest,
@@ -373,6 +389,7 @@ class AirPipeline:
             max_resident_blocks=max_resident_blocks,
             text_encoder_device=text_encoder_device,
             extra_manifests=extra_manifests,
+            lora=overlay,
         )
 
     # -- use ---------------------------------------------------------------
@@ -477,6 +494,13 @@ class AirPipeline:
                 f"{int(engine.get('sync_loads', 0))} sync, "
                 f"{engine.get('sync_load_s', 0.0):.2f}s)\n"
             )
+            if engine.get("lora_bytes"):
+                names = ", ".join(self._lora.adapter_names) or "loaded"
+                io_line += (
+                    f"  LoRA             {names}  "
+                    f"{engine['lora_bytes'] / 1e6:.1f} MB, "
+                    f"{int(engine.get('lora_fusions', 0))} fusions\n"
+                )
         return (
             f"AirCanvas {self.manifest.model_class} ({self.adapter.key}) "
             f"compression={self.manifest.compression} on {self.device}\n"
@@ -487,6 +511,43 @@ class AirPipeline:
             f"{io_line}"
             f"{self.plan.describe()}"
         )
+
+    def load_lora(
+        self,
+        source: str | Path,
+        *,
+        scale: float = 1.0,
+        adapter_name: str | None = None,
+        weight_name: str | None = None,
+        hf_token: str | None = None,
+    ) -> str:
+        """Load a DiT LoRA and fuse it on-stream after each block dequant.
+
+        ``source`` is a local ``.safetensors`` file, a directory of them, or a
+        Hub repo id. Works with fp8/NF4 shard caches — the adapter is applied
+        to compute-dtype weights, not the quantized payload. Text-encoder
+        keys in the file are skipped (TEs are load-run-evict, not sharded).
+        Returns the adapter name (auto-derived from the file if omitted).
+        """
+        return self._lora.load(
+            source,
+            scale=scale,
+            adapter_name=adapter_name,
+            weight_name=weight_name,
+            hf_token=hf_token,
+        )
+
+    def unload_lora(self, adapter_name: str | None = None) -> None:
+        """Drop one loaded LoRA, or every LoRA when ``adapter_name is None``."""
+        self._lora.unload(adapter_name)
+
+    def set_lora_scale(self, adapter_name: str, scale: float) -> None:
+        """Change one adapter's scale; takes effect on the next ``__call__``."""
+        self._lora.set_scale(adapter_name, scale)
+
+    @property
+    def lora_adapters(self) -> tuple[str, ...]:
+        return self._lora.adapter_names
 
     def close(self) -> None:
         """Drop references to the wrapped pipeline and free device memory."""
