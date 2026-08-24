@@ -256,6 +256,7 @@ def _run(args: argparse.Namespace) -> int:
         shard_cache=args.cache_dir,
         compute_dtype=args.compute_dtype,
         hf_token=args.hf_token,
+        gguf_file=args.gguf_file,
     )
     result = pipe(
         args.prompt,
@@ -300,6 +301,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Hugging Face token for gated models (defaults to your hf auth login / HF_TOKEN)",
     )
+    sp.add_argument(
+        "--gguf-file",
+        default=None,
+        help="Split from a quantized GGUF checkpoint instead of the original weights: "
+        "a local .gguf path or 'repo_id:filename' "
+        "(e.g. city96/FLUX.1-dev-gguf:flux1-dev-Q4_K_S.gguf). Needs pip install aircanvas[gguf]",
+    )
 
     rp = sub.add_parser("run", help="Generate with a streamed pipeline")
     rp.add_argument("source", help="HF repo id or local path")
@@ -317,6 +325,12 @@ def main(argv: list[str] | None = None) -> int:
         "--hf-token",
         default=None,
         help="Hugging Face token for gated models (defaults to your hf auth login / HF_TOKEN)",
+    )
+    rp.add_argument(
+        "--gguf-file",
+        default=None,
+        help="Stream the DiT from a shard cache split off a quantized GGUF checkpoint: "
+        "a local .gguf path or 'repo_id:filename'. Needs pip install aircanvas[gguf]",
     )
 
     dp = sub.add_parser("doctor", help="Probe hardware and report runnable models")
@@ -345,9 +359,10 @@ def main(argv: list[str] | None = None) -> int:
             compute_dtype=None if args.compute_dtype == "source" else args.compute_dtype,
             hash_shards=args.hash_shards,
             hf_token=args.hf_token,
+            gguf_file=args.gguf_file,
         )
         cache = args.cache_dir or shard_cache_dir(
-            args.source, args.subfolder, compression, manifest.compute_dtype
+            args.source, args.subfolder, compression, manifest.compute_dtype, args.gguf_file
         )
         total = sum(b.n_bytes for b in manifest.blocks) + manifest.resident_bytes
         largest = max(b.n_bytes for b in manifest.blocks)

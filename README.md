@@ -41,6 +41,9 @@ steps are so compute-heavy the transfer vanishes entirely.
 
 ## Updates
 
+- **[2026/08] GGUF sources (main, v0.2.0 upcoming)** — split straight from a
+  quantized `.gguf` (`--gguf-file city96/...:flux1-dev-Q4_K_S.gguf`): a ~7 GB
+  download instead of the 24 GB original checkpoint.
 - **[2026/08] v0.1.0 — first working release.** FLUX.1, Qwen-Image, SD3/3.5,
   Wan 2.1/2.2 (dual-expert handover), HunyuanVideo, CogVideoX adapters; fp8
   and NF4 shard formats; automatic VRAM/RAM/disk budget solver;
@@ -153,6 +156,22 @@ On the 6 GB dev machine, fp8 shards cut streamed step time from ~300 ms to
 dequantization runs through bitsandbytes' kernel straight into a
 pre-allocated pool and is tested bitwise-identical to the reference path.
 
+**Splitting from GGUF** (`pip install "aircanvas[gguf]"`): already have a
+quantized `.gguf` from the ComfyUI ecosystem — or a data cap that says no to
+a 24 GB download? Point the splitter at the ~7 GB quant instead; only the
+few-KB `config.json` is fetched from the original repo:
+
+```bash
+aircanvas split black-forest-labs/FLUX.1-dev \
+    --gguf-file city96/FLUX.1-dev-gguf:flux1-dev-Q4_K_S.gguf --compression fp8
+```
+
+Tensors are dequantized once at split time and resharded into the verified
+streaming codecs above. GGUFs with model-native tensor names are read
+directly (mmap-lazy — peak RAM is one tensor); BFL-style FLUX layouts are
+converted through diffusers' single-file loader. In Python:
+`AirPipeline.from_pretrained(..., gguf_file="repo_id:file.gguf")`.
+
 ## Configurations
 
 Everything routes through `AirPipeline.from_pretrained(model_id, ...)`:
@@ -165,6 +184,7 @@ Everything routes through `AirPipeline.from_pretrained(model_id, ...)`:
 | `shard_cache` | HF cache | where shards live — never inside the repo |
 | `device` | auto | CUDA if available |
 | `compute_dtype` | `"bfloat16"` | dtype blocks are decompressed to |
+| `gguf_file` | — | split from a quantized GGUF: local path or `"repo_id:file.gguf"` |
 | `max_resident_blocks` | solver | pin the first N blocks permanently in VRAM |
 | `prefetch` | `True` | background pipelined streaming (off = synchronous loads) |
 | `cache_embeddings` | `True` | disk-cache text embeddings; repeat prompts skip the encoders entirely |
