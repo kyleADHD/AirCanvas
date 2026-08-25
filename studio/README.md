@@ -9,9 +9,12 @@ studio/                  ← this project
   README.md
 ```
 
-The Grok preview of Studio is the same control surface (model, codec, LoRA
-stack, GGUF, budgets, report) running in **demo mode** — no GPU in that
-sandbox. On your box, this server talks to the real pipeline.
+First launch is a **welcome setup**: pick image and/or video models, then
+AirCanvas splits each DiT into streamed shards. After that the desk is
+Imagine-style — prompt dock, a layout that follows the model (text,
+reference stills, edit, video, start-frame), plus Gallery and Settings.
+
+The Grok preview is demo mode (no GPU). On your box this server is live.
 
 ## Features wired to the library
 
@@ -40,6 +43,7 @@ Open the Studio UI (this preview, or any client pointing at `/api`). CORS is
 open for local use.
 
 ```
+POST /api/setup      { repos, compression, hf_token, gguf_file }
 POST /api/load       { repo, compression, vram_budget, gguf_file, hf_token }
 POST /api/lora       { source, scale, weight_name }
 POST /api/generate   { prompt, steps, width, height, num_frames, seed }

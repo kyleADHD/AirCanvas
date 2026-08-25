@@ -167,3 +167,29 @@ def generate(body: GenerateBody) -> dict[str, Any]:
     if frames is not None:
         payload["n_frames"] = len(frames[0]) if frames else 0
     return payload
+
+
+class SetupBody(BaseModel):
+    repos: list[str]
+    compression: Literal["none", "fp8", "nf4"] = "fp8"
+    hf_token: str | None = None
+    gguf_file: str | None = None
+
+
+@app.post("/api/setup")
+def setup(body: SetupBody) -> dict[str, Any]:
+    """Split selected models into shard caches (welcome / add-models flow)."""
+    from aircanvas.sharding.splitter import split_model
+
+    compression = None if body.compression == "none" else body.compression
+    done: list[str] = []
+    for repo in body.repos:
+        split_model(
+            repo,
+            compression=compression,
+            hf_token=body.hf_token,
+            gguf_file=body.gguf_file,
+        )
+        done.append(repo)
+    return {"ok": True, "installed": done}
+
