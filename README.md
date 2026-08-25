@@ -74,6 +74,7 @@ steps are so compute-heavy the transfer vanishes entirely.
 - [How it works](#how-it-works)
 - [Model compression: fp8 & NF4 shards](#model-compression-fp8--nf4-shards)
 - [LoRA on streamed (and quantized) models](#lora-on-streamed-and-quantized-models)
+- [Studio UI](#studio-ui)
 - [Configurations](#configurations)
 - [Supported Models](#supported-models)
 - [Benchmarks](#benchmarks)
@@ -198,6 +199,21 @@ Repeat `--lora` to stack adapters. Sources: a local `.safetensors`, a
 directory of them, or a Hub repo id (`lora_weight_name=` if the repo has
 several files). PEFT (`*.lora_A/lora_B.weight`) and kohya
 (`lora_unet_*.lora_down/up.weight`) layouts are both accepted.
+
+## Studio UI
+
+Separate project in [`studio/`](studio/): a local desk for the library — model
+picker, fp8/NF4, GGUF, LoRA stack, budgets, and `pipe.report()` telemetry.
+
+```bash
+pip install -e .[nf4]
+pip install -e ./studio
+aircanvas-studio --host 0.0.0.0 --port 7860
+```
+
+On a GPU box the FastAPI process calls `AirPipeline` for real. The browser
+preview of Studio is the same control surface in demo mode (no 20B weights in
+that sandbox).
 
 ## Configurations
 
