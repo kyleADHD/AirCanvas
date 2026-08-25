@@ -61,6 +61,31 @@ normal RAM and NVMe throughput the same run computes in the low hours. It
 also survived: a battery drain to 0%, a critical-battery sleep mid-step, and
 resume — the run completed correctly anyway.
 
+## Verifying GGUF sources + LoRA fusion on real models
+
+`benchmarks/verify_gguf_lora.py` proves the v0.2.0 features against live
+checkpoints: it splits a quantized `.gguf` (no original download — only
+config.json), reloads every shard through the engine's exact bind path, and
+compares bitwise against an independent gguf-py dequant reference — with and
+without a LoRA fused on load. Presets pin known-good public repos:
+
+```bash
+# FLUX.2-klein-9B: 5.8 GB Q4_K_S download instead of the 18.2 GB original,
+# fused with a real community pose-control LoRA (gated repo: accept the
+# license on the Hub + hf auth login first)
+python benchmarks/verify_gguf_lora.py flux2-9b
+
+# Wan 2.1 T2V 1.3B from a 1.5 GB Q8_0
+python benchmarks/verify_gguf_lora.py wan-1.3b
+
+# add --generate for a full AirPipeline image/video from the GGUF cache
+```
+
+The harness's logic is itself CI-adjacent: the same gate runs offline
+against a generated toy GGUF + PEFT LoRA (bitwise PASS on the fp8 and
+uncompressed paths, resident shard included). Real-model results land in
+the table above once measured.
+
 ## Honest misses
 
 The aspirational targets (FLUX ≤ 90 s, Qwen ≤ 4 min) missed by ~4.5× and
