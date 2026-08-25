@@ -258,6 +258,10 @@ def _run(args: argparse.Namespace) -> int:
         hf_token=args.hf_token,
         gguf_file=args.gguf_file,
     )
+    for source, scale, weight_name in zip(
+        args.lora, args.lora_scale, args.lora_weight_name, strict=True
+    ):
+        pipe.load_lora(source, scale=scale, weight_name=weight_name or None)
     result = pipe(
         args.prompt,
         num_inference_steps=args.steps,
@@ -332,6 +336,27 @@ def main(argv: list[str] | None = None) -> int:
         help="Stream the DiT from a shard cache split off a quantized GGUF checkpoint: "
         "a local .gguf path or 'repo_id:filename'. Needs pip install aircanvas[gguf]",
     )
+    rp.add_argument(
+        "--lora",
+        action="append",
+        default=[],
+        help="DiT LoRA to fuse on-stream (local .safetensors, a directory, or a Hub repo). "
+        "Repeat for multiple adapters. Applied after dequant, so fp8/NF4 shards work.",
+    )
+    rp.add_argument(
+        "--lora-scale",
+        action="append",
+        default=[],
+        type=float,
+        help="Scale for the matching --lora (default 1.0). Repeat in the same order.",
+    )
+    rp.add_argument(
+        "--lora-weight-name",
+        action="append",
+        default=[],
+        help="Filename inside a Hub repo / directory for the matching --lora. "
+        "Repeat in the same order; omit to use the repo's default safetensors.",
+    )
 
     dp = sub.add_parser("doctor", help="Probe hardware and report runnable models")
     dp.add_argument(
@@ -381,6 +406,21 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor(args.probe_disk)
 
     if args.command == "run":
+        n = len(args.lora)
+        scales = list(args.lora_scale)
+        names = list(args.lora_weight_name)
+        if not scales:
+            scales = [1.0] * n
+        elif len(scales) == 1 and n > 1:
+            scales = scales * n
+        if len(names) < n:
+            names.extend([""] * (n - len(names)))
+        if n and len(scales) != n:
+            parser.error("--lora-scale count must match --lora (or pass a single scale)")
+        if len(names) != n:
+            parser.error("--lora-weight-name count must match --lora")
+        args.lora_scale = scales
+        args.lora_weight_name = names
         return _run(args)
 
     raise NotImplementedError(f"'{args.command}' lands in a later milestone; see docs/ROADMAP.md")

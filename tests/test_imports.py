@@ -9,6 +9,7 @@ MODULES = [
     "aircanvas.api",
     "aircanvas.cli",
     "aircanvas.config",
+    "aircanvas.lora",
     "aircanvas.sharding.manifest",
     "aircanvas.sharding.splitter",
     "aircanvas.sharding.quant",

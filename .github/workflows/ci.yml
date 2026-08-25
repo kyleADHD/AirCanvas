@@ -36,6 +36,6 @@ jobs:
           ruff check .
           ruff format --check .
       - name: Type-check the correctness-critical core
-        run: mypy src/aircanvas/sharding src/aircanvas/streaming
+        run: mypy src/aircanvas/sharding src/aircanvas/streaming src/aircanvas/lora.py
       - name: Unit tests (offline CPU tier)
         run: pytest -q

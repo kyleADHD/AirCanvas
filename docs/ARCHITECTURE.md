@@ -15,7 +15,8 @@ Factual grounding for every number here: [RESEARCH.md](RESEARCH.md).
 - G6. Windows and Linux first-class (primary dev machine is Windows 11).
 
 **Non-goals (v1)**
-- Training/fine-tuning/LoRA merging (LoRA *loading* is a later milestone).
+- Training/fine-tuning/LoRA *training* (LoRA *loading* is M10: fuse-on-stream
+  after dequant, never PEFT injection, never a new shard cache).
 - UNet-era models (SDXL and older — heterogeneous conv blocks, and they don't need us).
 - Custom CUDA kernels (we compose existing ones: SDPA/FlashAttention, bnb dequant, torch fp8 casts).
 - Multi-GPU.
@@ -97,6 +98,7 @@ Factual grounding for every number here: [RESEARCH.md](RESEARCH.md).
 - Register pre/post forward hooks on each block from the BlockPlan. Pre-hook: wait on the block's GPU-ready CUDA event, bind weights (`set_module_tensor_to_device`). Post-hook: release the GPU slot back to the pool (params → meta), notify the prefetcher.
 - **GPU slot pool**: 2–3 reusable weight buffers sized to the largest block (double/triple buffering) instead of alloc/free per block — avoids allocator churn and `empty_cache()` calls in the hot loop (AirLLM's `gc.collect()`-per-layer is a known cost we design out).
 - First forward records the **block execution schedule**; subsequent steps prefetch against it with lookahead K (video schedules are static; recorded once).
+- **LoRA overlay (M10).** Optional. `LoraOverlay` holds PEFT/kohya A/B tensors GPU-resident (typically tens of MB) and, after each block is dequantized into its compute-dtype view, fuses `W.addmm_(up, down, alpha=scale)` in place. Quantized shards are unchanged on disk: the adapter meets the weights after the codec has undone itself, which is the only correct composition with fp8/NF4. Empty overlay is a no-op; the bitwise gate is the fused full-VRAM reference.
 
 **`prefetch.py`** — 3-stage pipeline:
 1. **Disk → pinned ring** — small thread pool reads shard files into a fixed ring of pinned CPU buffers (ring depth = budget-solver output, default 2–4 blocks). On Windows, plain buffered reads first; `O_DIRECT`-style optimizations are a later optimization milestone.
@@ -141,6 +143,7 @@ pipe = AirPipeline.from_pretrained(
     shard_cache=None,  # default: <HF cache>/aircanvas/<model>/<compression>/
 )
 image = pipe(prompt="…", num_inference_steps=30).images[0]
+pipe.load_lora("path/or/hub-id", scale=0.8)  # fused after dequant; fp8/NF4-safe
 pipe.report()  # where time went: io / h2d / compute / dequant, hit rates
 ```
 

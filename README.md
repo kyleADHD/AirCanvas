@@ -41,6 +41,10 @@ steps are so compute-heavy the transfer vanishes entirely.
 
 ## Updates
 
+- **[2026/08] LoRA loading onto quantized shards (main, v0.2.0 upcoming)** —
+  `pipe.load_lora("repo-or-file", scale=0.8)` fuses PEFT/kohya adapters
+  *after* dequant, so fp8/NF4 caches keep working. Stack several; drop with
+  `unload_lora`. CLI: `aircanvas run … --lora path --lora-scale 0.8`.
 - **[2026/08] GGUF sources (main, v0.2.0 upcoming)** — split straight from a
   quantized `.gguf` (`--gguf-file city96/...:flux1-dev-Q4_K_S.gguf`): a ~7 GB
   download instead of the 24 GB original checkpoint.
@@ -69,6 +73,7 @@ steps are so compute-heavy the transfer vanishes entirely.
 - [Quickstart](#quickstart)
 - [How it works](#how-it-works)
 - [Model compression: fp8 & NF4 shards](#model-compression-fp8--nf4-shards)
+- [LoRA on streamed (and quantized) models](#lora-on-streamed-and-quantized-models)
 - [Configurations](#configurations)
 - [Supported Models](#supported-models)
 - [Benchmarks](#benchmarks)
@@ -172,6 +177,28 @@ directly (mmap-lazy — peak RAM is one tensor); BFL-style FLUX layouts are
 converted through diffusers' single-file loader. In Python:
 `AirPipeline.from_pretrained(..., gguf_file="repo_id:file.gguf")`.
 
+## LoRA on streamed (and quantized) models
+
+LoRA is fused **after** each block is dequantized, in-place, into the
+compute-dtype weights the engine is about to bind. The shard cache is never
+rewritten — fp8/NF4 stay fp8/NF4 on disk, and the adapter meets the weights
+the same way a full-VRAM `W += scale * B @ A` would. Text-encoder keys in the
+file are skipped (encoders load-run-evict; they are not sharded).
+
+```python
+pipe = AirPipeline.from_pretrained("Qwen/Qwen-Image", compression="nf4")
+pipe.load_lora("your-org/your-lora", scale=0.85)
+image = pipe("a watercolor fox, in the style of …", num_inference_steps=20).images[0]
+pipe.unload_lora()
+```
+
+Or in one shot: `AirPipeline.from_pretrained(..., lora="your-org/your-lora", lora_scale=0.85)`.
+CLI: `aircanvas run Qwen/Qwen-Image -p "…" --lora your-org/your-lora --lora-scale 0.85`.
+Repeat `--lora` to stack adapters. Sources: a local `.safetensors`, a
+directory of them, or a Hub repo id (`lora_weight_name=` if the repo has
+several files). PEFT (`*.lora_A/lora_B.weight`) and kohya
+(`lora_unet_*.lora_down/up.weight`) layouts are both accepted.
+
 ## Configurations
 
 Everything routes through `AirPipeline.from_pretrained(model_id, ...)`:
@@ -185,6 +212,9 @@ Everything routes through `AirPipeline.from_pretrained(model_id, ...)`:
 | `device` | auto | CUDA if available |
 | `compute_dtype` | `"bfloat16"` | dtype blocks are decompressed to |
 | `gguf_file` | — | split from a quantized GGUF: local path or `"repo_id:file.gguf"` |
+| `lora` | — | DiT LoRA to fuse on-stream: local `.safetensors`, directory, or Hub repo |
+| `lora_scale` | `1.0` | strength of `lora=` (further adapters via `pipe.load_lora`) |
+| `lora_weight_name` | — | filename inside a Hub repo / directory when it contains several LoRAs |
 | `max_resident_blocks` | solver | pin the first N blocks permanently in VRAM |
 | `prefetch` | `True` | background pipelined streaming (off = synchronous loads) |
 | `cache_embeddings` | `True` | disk-cache text embeddings; repeat prompts skip the encoders entirely |
@@ -299,6 +329,15 @@ checkpoint can be deleted and generation runs fully offline.
 Windows is the *primary* development machine — OneDrive-safe paths,
 no-`mmap`-under-commit-pressure fallbacks, and cross-platform memory probing
 are all part of the tested path.
+
+### 10. Can I use LoRAs with quantized shards?
+
+Yes. LoRA is fused after dequant, so fp8/NF4 caches are the normal path, not
+a special case. `pipe.load_lora("file.safetensors", scale=0.8)` (or
+`aircanvas run … --lora file.safetensors --lora-scale 0.8`) works with PEFT
+and kohya `.safetensors` files; stack several; `unload_lora()` drops them.
+The adapter stays in VRAM (typically tens of MB). Text-encoder LoRAs in the
+same file are skipped — TEs are load-run-evict, not sharded.
 
 ## Acknowledgement
 

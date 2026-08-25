@@ -58,8 +58,27 @@ fp8 halves disk traffic and roughly halves step time on this workload. Resident 
 ## M8 — Polish & release — **done** (PyPI upload itself needs an account token)
 - SD3.5 + CogVideoX adapters ✅ (CogVideoX validated against the live index; SD3.5 gated, pinned from card). RAM-cache auto-promotion tier live ✅ (blobs promoted to pageable RAM after first read; hits in report()). GitHub Actions CI (Windows+Linux, lint+mypy+CPU tests) ✅. docs/BENCHMARKS.md + README rewritten around measured numbers ✅. v0.1.0 + CHANGELOG tagged ✅.
 
+## M9 — GGUF sources — **done** (native K-quant streaming still deferred)
+- Split directly from a quantized `.gguf` (`--gguf-file repo:file.gguf`):
+  dequant at split time into the verified none/fp8/nf4 codecs. ✅
+
+## M10 — LoRA loading onto quantized shards — **done**
+- Fuse PEFT / kohya `.safetensors` adapters **after dequant**, in-place, into
+  the compute-dtype views the engine binds. Works with fp8/NF4 because the
+  adapter never touches the quantized payload. ✅
+- `pipe.load_lora(source, scale=…)` / `unload_lora` / `set_lora_scale`;
+  `lora=` on `from_pretrained`; `aircanvas run --lora`. Multiple adapters
+  stack. Text-encoder keys skipped (TEs are load-run-evict). ✅
+- Hot-loop contract: `down`/`up` materialized onto the engine device once at
+  construction; per-block path is `weight.addmm_(up, down, alpha=scale)` into
+  already-owned slot storage. Bitwise-equal to a fused full-VRAM reference
+  at `compression=None`. ✅
+
 ## Later / explicitly deferred
-- LoRA loading onto quantized shards; HiDream (4-TE stack + MoE FFN); GGUF Q4 shard format; io_uring/GDS fast path; upstreaming pieces to diffusers; distilled-model RAM-tier heuristics; multi-GPU.
+- HiDream (4-TE stack + MoE FFN); GGUF Q4 shard format (native K-quant
+  streaming); io_uring/GDS fast path; upstreaming pieces to diffusers;
+  distilled-model RAM-tier heuristics; multi-GPU; text-encoder LoRAs;
+  LoRA training / merging into a new shard cache.
 
 ## Risks
 | Risk | Mitigation |

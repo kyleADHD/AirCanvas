@@ -48,6 +48,7 @@ from torch import nn
 
 from aircanvas.adapters import ModelAdapter
 from aircanvas.config import StreamConfig
+from aircanvas.lora import LoraOverlay
 from aircanvas.runtime.text_encoders import EncodedPrompt, encode_and_evict, text_encoder_names
 from aircanvas.runtime.vae import configure_vae, vae_on_demand
 from aircanvas.sharding.manifest import Manifest
@@ -147,6 +148,7 @@ def arm_expert_handover(
     device: torch.device,
     config: StreamConfig | None = None,
     prefetch: bool = True,
+    lora: LoraOverlay | None = None,
 ) -> list[torch.utils.hooks.RemovableHandle]:
     """Lazy per-timestep expert switching (Wan 2.2's dual DiT, M7).
 
@@ -176,6 +178,7 @@ def arm_expert_handover(
             _manifest: Manifest = manifest,
             _cache: Path = cache_dir,
             _box: dict = handle_box,
+            _lora: LoraOverlay | None = lora,
         ) -> None:
             _box["h"].remove()
             if _box["h"] in hooks:
@@ -192,6 +195,7 @@ def arm_expert_handover(
                 config=config,
                 prefetch=prefetch,
                 resident_blocks=0,
+                lora=_lora,
             )
             logger.info("Expert handover: %s now streams; prior engines released", _name)
 
@@ -217,6 +221,7 @@ class Orchestrator:
         prefetch: bool = True,
         text_encoder_device: torch.device | str | None = None,
         extra_manifests: dict[str, tuple[Manifest, Path]] | None = None,
+        lora: LoraOverlay | None = None,
     ) -> None:
         if not hasattr(pipe, "encode_prompt"):
             raise OrchestrationError(
@@ -233,6 +238,7 @@ class Orchestrator:
         self.prefetch = prefetch
         self.text_encoder_device = text_encoder_device
         self.extra_manifests = dict(extra_manifests or {})
+        self.lora = lora
         self.stats = PhaseStats()
         self.vae_features = configure_vae(getattr(pipe, "vae", None))
         logger.info(
@@ -278,6 +284,7 @@ class Orchestrator:
             prefetch=self.prefetch,
             resident_blocks=self.plan.resident_blocks,
             ram_cache_bytes=self.plan.ram_cache_bytes,
+            lora=self.lora,
         )
         engines: dict[str, StreamingEngine] = {"transformer": engine}
         handover_hooks = arm_expert_handover(
@@ -287,6 +294,7 @@ class Orchestrator:
             device=self.device,
             config=self.plan.stream_config(),
             prefetch=self.prefetch,
+            lora=self.lora,
         )
         denoise_start = time.perf_counter()
         try:
