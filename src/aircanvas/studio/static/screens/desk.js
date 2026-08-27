@@ -463,7 +463,12 @@ function simpleDesk() {
   const est = estimate(model);
   const shapes = store.state.shapes || {};
   const quality = store.state.quality || { fast: 0.4, balanced: 0.7, best: 1.0 };
-  const last = store.state.outputs.find((o) => o.state === 'done');
+  // The stage shows this model's last result, same rule as the Pro desk: a
+  // picture from a different model would silently misrepresent the settings
+  // shown below it.
+  const last = store.state.outputs.find(
+    (o) => o.state === 'done' && (!model || o.modelId === model.id),
+  );
 
   return h('div.app',
     topbar(),
