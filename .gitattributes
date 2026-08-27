@@ -2,3 +2,8 @@
 *.png binary
 *.jpg binary
 *.safetensors binary
+# The Studio's self-hosted fonts. `text=auto` would try to normalise line
+# endings inside them and produce a font that no longer parses.
+*.woff2 binary
+*.woff binary
+*.mp4 binary

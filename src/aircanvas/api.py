@@ -36,6 +36,7 @@ from aircanvas.adapters import ModelAdapter, resolve
 from aircanvas.config import Compression, cache_root, parse_size, safe_slug
 from aircanvas.lora import LoraOverlay
 from aircanvas.runtime.orchestrator import Orchestrator, PhaseStats, meta_transformer
+from aircanvas.runtime.progress import RunObserver
 from aircanvas.sharding.manifest import Manifest
 from aircanvas.sharding.splitter import shard_cache_dir, split_model
 from aircanvas.streaming.residency import ResidencyPlan, Workload, solve
@@ -394,10 +395,32 @@ class AirPipeline:
 
     # -- use ---------------------------------------------------------------
 
-    def __call__(self, prompt: str | list[str], **kwargs: Any) -> Any:
-        """Generate. Extra kwargs go straight to the wrapped pipeline call."""
+    def __call__(
+        self, prompt: str | list[str], *, observer: RunObserver | None = None, **kwargs: Any
+    ) -> Any:
+        """Generate. Extra kwargs go straight to the wrapped pipeline call.
+
+        `observer` receives phase and step events as they happen
+        (runtime/progress.py); block-level counters are polled via
+        `live_stats()` rather than pushed.
+        """
         self._replan(kwargs)
-        return self._orchestrator.generate(prompt, **kwargs)
+        return self._orchestrator.generate(prompt, observer=observer, **kwargs)
+
+    def live_stats(self) -> dict[str, float]:
+        """The in-flight run's engine counters, merged across experts.
+
+        Empty between runs. Same keys as `report(as_dict=True)['phases']
+        ['engine']` — block_loads, bytes_loaded, prefetch_hits, sync_loads,
+        stall seconds — but readable *while* the denoise loop is running, which
+        is what a progress UI needs. Cheap enough to poll at 10 Hz: it copies
+        two small dicts and touches no locks the engine holds.
+        """
+        merged: dict[str, float] = {}
+        for engine in self._orchestrator.engines.values():
+            for key, value in engine.stats.items():
+                merged[key] = merged.get(key, 0.0) + value
+        return merged
 
     def _replan(self, call_kwargs: dict[str, Any]) -> None:
         """Re-solve the budget for the resolution/steps actually requested.
@@ -478,7 +501,9 @@ class AirPipeline:
                     "device": self.hardware.device,
                     "gpu": self.hardware.gpu_name,
                     "vram_free_bytes": self.hardware.vram_bytes,
+                    "vram_total_bytes": self.hardware.vram_total_bytes,
                     "ram_free_bytes": self.hardware.ram_bytes,
+                    "ram_total_bytes": self.hardware.ram_total_bytes,
                     "disk_bw_bytes_s": self.hardware.disk_bw_bytes_s,
                 },
             }

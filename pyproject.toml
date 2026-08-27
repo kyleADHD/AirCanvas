@@ -44,11 +44,19 @@ dependencies = [
 nf4 = ["bitsandbytes>=0.45"]
 gguf = ["gguf>=0.10"]
 video = ["imageio[ffmpeg]"]
+# The desktop UI (`aircanvas studio`). Deliberately not a core dependency:
+# `doctor` and `run` on a minimal install must not pull in a web framework.
+studio = ["fastapi>=0.110", "uvicorn>=0.30"]
 dev = [
     "pytest>=8",
     "ruff>=0.8",
     "mypy>=1.13",
     "gguf>=0.10",
+    # tests/test_studio.py drives the app through fastapi's TestClient, which
+    # needs httpx; without these the studio tests skip rather than fail.
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+    "httpx",
 ]
 
 [project.scripts]

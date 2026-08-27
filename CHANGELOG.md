@@ -2,6 +2,37 @@
 
 ## 0.2.0 — Unreleased
 
+- **AirCanvas Studio, the local desktop UI** (`aircanvas[studio]` extra):
+  `aircanvas studio` serves a single-page app from the same process that owns
+  the pipeline — twelve screens across a Simple mode that shows only times,
+  sizes and step counts, and a Pro mode where telemetry is the hero. Setup
+  verdicts, residency plans and per-step disk times are produced by the real
+  budget solver against the live probe, not by a stored table; every size and
+  timing in the model catalog is measured (docs/BENCHMARKS.md), published, or
+  derived from one of those, and says which. `--demo` shows every screen with
+  no GPU, no models and no downloads. The frontend is dependency-free ES
+  modules with self-hosted fonts, so it works offline and ships as source.
+  See [docs/STUDIO.md](docs/STUDIO.md).
+- **Live run telemetry** (`runtime/progress.py`): `AirPipeline.__call__` takes
+  an optional `observer` receiving phase and step events, and
+  `AirPipeline.live_stats()` exposes the in-flight engine counters (blocks,
+  bytes, prefetch hits, stalls) while the denoise loop is running — until now
+  those were only readable from `report()` after the fact. Observers are
+  advisory: anything they raise is logged and swallowed. Step events come from
+  diffusers' own `callback_on_step_end`, chained rather than replacing a
+  caller's.
+- **Split progress callback**: `split_model(progress=…)` fires once per block,
+  including blocks a previous run already finished, so a resumed split reports
+  its true starting point. Raising from it stops the split at a block boundary
+  — every shard already written keeps its `.done` marker.
+- `sharding.manifest.synthetic_manifest()`: build a manifest shaped like a real
+  model from published sizes alone, so "can this box run X?" is answered by the
+  real solver for a model that is not installed yet. `aircanvas doctor` now
+  uses it instead of its own private copy.
+- `pipe.report()['hardware']` gains `vram_total_bytes` / `ram_total_bytes`, so
+  a persisted report can draw its own memory axes.
+- Fixed: `__version__` said `0.1.0` on a 0.2.0 build. It is stamped into every
+  shard's metadata and printed by `doctor`, so the drift was visible on disk.
 - **LoRA loading onto quantized shards** (M10): `pipe.load_lora(source, scale=1.0)`
   — and `lora=` on `AirPipeline.from_pretrained` / `aircanvas run --lora` —
   fuses PEFT and kohya `.safetensors` adapters **after dequant**, in-place,

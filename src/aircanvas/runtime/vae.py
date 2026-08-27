@@ -27,6 +27,7 @@ from typing import Any
 import torch
 from torch import nn
 
+from aircanvas.runtime.progress import RunObserver, notify
 from aircanvas.utils.memory import clean_memory
 
 logger = logging.getLogger(__name__)
@@ -57,13 +58,20 @@ def configure_vae(vae: nn.Module | None, *, tiling: bool = True, slicing: bool =
 
 @contextlib.contextmanager
 def vae_on_demand(
-    pipe: Any, device: torch.device, stats: dict[str, float], *, evict: bool = True
+    pipe: Any,
+    device: torch.device,
+    stats: dict[str, float],
+    *,
+    evict: bool = True,
+    observer: RunObserver | None = None,
 ) -> Iterator[None]:
     """Keep the VAE off `device` until decode, then put it back.
 
     Wraps the bound `decode` with an instance attribute (shadowing the class
     method) and removes it on exit, so nothing about the pipeline object
-    survives the context.
+    survives the context. Decode is the only phase that runs *inside* the
+    pipeline call, so this wrapper is also where a live UI learns the phase
+    changed (`observer`).
     """
     vae = getattr(pipe, "vae", None)
     if not isinstance(vae, nn.Module) or not callable(getattr(vae, "decode", None)):
@@ -74,13 +82,16 @@ def vae_on_demand(
 
     def timed_decode(*args: object, **kwargs: object) -> object:
         start = time.perf_counter()
+        notify(observer, "phase_started", "decode")
         vae.to(device)
         try:
             return original(*args, **kwargs)
         finally:
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
-            stats["decode_s"] = stats.get("decode_s", 0.0) + (time.perf_counter() - start)
+            elapsed = time.perf_counter() - start
+            stats["decode_s"] = stats.get("decode_s", 0.0) + elapsed
+            notify(observer, "phase_finished", "decode", elapsed)
             if evict:
                 vae.to("cpu")
 

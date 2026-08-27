@@ -126,32 +126,16 @@ KNOWN_MODELS: tuple[KnownModel, ...] = (
 
 def _synthetic_manifest(model: KnownModel, compression: Compression):
     """A manifest shaped like `model` so doctor uses the REAL budget solver."""
-    from aircanvas.sharding.manifest import BlockShard, Manifest
+    from aircanvas.sharding.manifest import synthetic_manifest
 
-    ratio = model.fp8_ratio if compression == "fp8" else 1.0
-    avg_load = model.dit_bytes // model.n_blocks
-    blocks = tuple(
-        BlockShard(
-            name=f"blocks.{i}",
-            file=f"block_{i:04d}.safetensors",
-            # Largest block first: matches FLUX/Hunyuan two-species layouts and
-            # is what the solver's front-loaded residency assumes.
-            n_bytes=int((model.largest_block_bytes if i == 0 else avg_load) * ratio),
-            load_bytes=model.largest_block_bytes if i == 0 else avg_load,
-        )
-        for i in range(model.n_blocks)
-    )
-    return Manifest(
+    return synthetic_manifest(
         source=model.repo_id,
-        revision=None,
-        subfolder="transformer",
-        model_class="SyntheticTransformer2DModel",
-        adapter="generic",
-        compression=compression,
-        compute_dtype="bfloat16",
-        blocks=blocks,
+        n_blocks=model.n_blocks,
+        largest_block_bytes=model.largest_block_bytes,
+        dit_bytes=model.dit_bytes,
         resident_bytes=model.resident_bytes,
-        resident_load_bytes=model.resident_bytes,
+        compression=compression,
+        compressed_ratio=model.fp8_ratio if compression == "fp8" else 1.0,
     )
 
 
@@ -365,6 +349,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Measure real read bandwidth from the largest cached shard (a few seconds)",
     )
 
+    up = sub.add_parser("studio", help="Open the local desktop UI in a browser")
+    up.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Interface to bind (default 127.0.0.1). The Studio is unauthenticated: "
+        "only widen this on a network you trust.",
+    )
+    up.add_argument("--port", type=int, default=8760)
+    up.add_argument("--no-browser", action="store_true", help="Do not open a browser window")
+    up.add_argument(
+        "--demo",
+        action="store_true",
+        help="Show every screen without a GPU: the benchmark machine's profile, real solver "
+        "output, and measured runs replayed on a compressed clock. No model is loaded.",
+    )
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -404,6 +404,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _doctor(args.probe_disk)
+
+    if args.command == "studio":
+        from aircanvas.studio.server import serve
+
+        serve(
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+            demo=args.demo,
+            log_level="info" if args.verbose else "warning",
+        )
+        return 0
 
     if args.command == "run":
         n = len(args.lora)

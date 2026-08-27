@@ -114,3 +114,56 @@ class Manifest:
             and self.compute_dtype == compute_dtype
             and self.model_class == model_class
         )
+
+
+def synthetic_manifest(
+    *,
+    source: str,
+    n_blocks: int,
+    largest_block_bytes: int,
+    dit_bytes: int,
+    resident_bytes: int,
+    compression: Compression,
+    compressed_ratio: float = 1.0,
+    compute_dtype: str = "bfloat16",
+) -> Manifest:
+    """A manifest shaped like a real model, from published sizes alone.
+
+    Nothing is downloaded and no cache is touched. This exists so that
+    "can this machine run X?" is answered by the REAL budget solver
+    (streaming/residency.py) rather than by a hand-maintained table of
+    verdicts: `aircanvas doctor` and the Studio's setup screen both size a
+    plan for a model the user has not installed yet.
+
+    Block sizes follow the two-species layout that FLUX and HunyuanVideo
+    actually have — the largest block first, the rest at the average — because
+    that is what the solver's front-loaded residency assumes.
+    `compressed_ratio` is the share of a block that survives compression
+    (fp8 keeps norms and modulation projections at bf16, so it is ~0.6, not
+    0.5); it scales on-disk bytes only, never the materialized size a GPU slot
+    must hold.
+    """
+    if n_blocks <= 0:
+        raise ValueError(f"n_blocks must be positive, got {n_blocks}")
+    average = dit_bytes // n_blocks
+    blocks = tuple(
+        BlockShard(
+            name=f"blocks.{i}",
+            file=f"block_{i:04d}.safetensors",
+            n_bytes=int((largest_block_bytes if i == 0 else average) * compressed_ratio),
+            load_bytes=largest_block_bytes if i == 0 else average,
+        )
+        for i in range(n_blocks)
+    )
+    return Manifest(
+        source=source,
+        revision=None,
+        subfolder="transformer",
+        model_class="SyntheticTransformer2DModel",
+        adapter="generic",
+        compression=compression,
+        compute_dtype=compute_dtype,
+        blocks=blocks,
+        resident_bytes=resident_bytes,
+        resident_load_bytes=resident_bytes,
+    )
