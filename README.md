@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="#quickstart"><b>Quickstart</b></a> |
+  <a href="docs/STUDIO.md"><b>Studio UI</b></a> |
   <a href="#configurations"><b>Configurations</b></a> |
   <a href="#supported-models"><b>Supported Models</b></a> |
   <a href="#benchmarks"><b>Benchmarks</b></a> |
@@ -41,6 +42,12 @@ steps are so compute-heavy the transfer vanishes entirely.
 
 ## Updates
 
+- **[2026/08] AirCanvas Studio, the desktop UI (main, v0.2.0 upcoming)** —
+  `aircanvas studio` opens a local single-page app served by the pipeline's own
+  process: setup verdicts computed by the real budget solver, a per-block split
+  grid, live streaming telemetry during a run, and an exportable report per
+  output. `--demo` shows all twelve screens with no GPU
+  ([docs/STUDIO.md](docs/STUDIO.md)).
 - **[2026/08] LoRA loading onto quantized shards (main, v0.2.0 upcoming)** —
   `pipe.load_lora("repo-or-file", scale=0.8)` fuses PEFT/kohya adapters
   *after* dequant, so fp8/NF4 caches keep working. Stack several; drop with
@@ -121,6 +128,24 @@ aircanvas doctor                                    # what can THIS box run?
 aircanvas split Qwen/Qwen-Image --compression nf4   # one-time reshard
 aircanvas run Qwen/Qwen-Image -p "a watercolor fox" # generate
 ```
+
+### 4. Or use the desktop UI
+
+```bash
+pip install "aircanvas[studio]"
+aircanvas studio          # opens http://127.0.0.1:8760/
+aircanvas studio --demo    # every screen, without a GPU or a download
+```
+
+**AirCanvas Studio** is a local single-page app served by the same Python
+process that owns the pipeline. Simple mode hides every decision the engine can
+make itself — only times, sizes in GB and step counts. Pro mode does the
+opposite: a phase timeline, a per-block streaming ticker, the residency plan the
+solver chose, and a report you can export or reproduce exactly. Setup verdicts
+("✓ runs · ~6 s IO/step", "tight · 0.3 GB headroom", "✗ needs 41 GB") come from
+the same budget solver that runs at generation time, not from a table.
+
+Details in [docs/STUDIO.md](docs/STUDIO.md).
 
 ## How it works
 

@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -311,12 +312,20 @@ def split_model(
     hash_shards: bool = False,
     hf_token: str | None = None,
     gguf_file: str | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> Manifest:
     """Find-or-create the shard cache for `source`; return its manifest.
 
     With `gguf_file` (a local .gguf path or 'repo_id:filename'), tensors come
     from the quantized GGUF — dequantized once here, resharded into the chosen
     codec — and only `source`'s config.json is fetched, never its weights.
+
+    `progress(done, total, block_name)` is called once per block — after the
+    shard lands, or immediately for a block a previous run already finished, so
+    a resumed split reports its true starting point rather than replaying from
+    zero. Raising from it aborts the split at a block boundary, which is the
+    supported way to stop one: every shard already written keeps its `.done`
+    marker and a later call resumes from there.
     """
     dtype = _torch_dtype(compute_dtype)
     # `_torch_dtype` maps None/"none"/"source" to None, so a real dtype here
@@ -359,6 +368,9 @@ def split_model(
             )
         if existing.is_complete(cache_dir):
             logger.info("Reusing complete shard cache at %s (source not touched)", cache_dir)
+            if progress is not None:
+                n = len(existing.blocks)
+                progress(n, n, "cached")
             return existing
 
     if gguf_file is not None:
@@ -432,6 +444,7 @@ def split_model(
         "compute_dtype": dtype_tag,
     }
     blocks: list[BlockShard] = []
+    total_blocks = len(plan.block_names)
     for i, block in enumerate(plan.block_names):
         fname = f"block_{i:04d}.safetensors"
         if _shard_ready(cache_dir, fname):
@@ -446,6 +459,8 @@ def split_model(
                     ),
                 )
             )
+            if progress is not None:
+                progress(i + 1, total_blocks, block)
             continue
         tensors = gather(plan.tensors_by_block[block])
         load_bytes = _materialized_bytes(tensors)
@@ -463,6 +478,8 @@ def split_model(
                 name=block, file=fname, n_bytes=n_bytes, sha256=digest, load_bytes=load_bytes
             )
         )
+        if progress is not None:
+            progress(i + 1, total_blocks, block)
 
     # The resident shard is never compressed (see module docstring).
     resident_fname = "resident.safetensors"
@@ -477,7 +494,11 @@ def split_model(
         )
 
     manifest = Manifest(
-        source=str(source),
+        # A local source is recorded ABSOLUTE. The cache outlives the shell it
+        # was made in — `aircanvas split ./my-model` then `aircanvas studio`
+        # from anywhere else must not turn a stale relative path into a Hub
+        # repo id and a surprise download.
+        source=str(Path(source).resolve()) if Path(source).is_dir() else str(source),
         revision=revision,
         subfolder=subfolder,
         model_class=model_class,

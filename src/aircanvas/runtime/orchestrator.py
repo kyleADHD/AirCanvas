@@ -49,6 +49,7 @@ from torch import nn
 from aircanvas.adapters import ModelAdapter
 from aircanvas.config import StreamConfig
 from aircanvas.lora import LoraOverlay
+from aircanvas.runtime.progress import RunObserver, notify
 from aircanvas.runtime.text_encoders import EncodedPrompt, encode_and_evict, text_encoder_names
 from aircanvas.runtime.vae import configure_vae, vae_on_demand
 from aircanvas.sharding.manifest import Manifest
@@ -105,6 +106,44 @@ def meta_transformer(model_cls: type, config: Mapping[str, Any], device: torch.d
         if not buf.is_meta and buf.device != device:
             _assign(model, name, buf.to(device))
     return model
+
+
+def _with_step_callback(
+    pipe: Any, call_kwargs: dict[str, Any], observer: RunObserver, steps: int
+) -> dict[str, Any]:
+    """Add a `callback_on_step_end` that reports each step to `observer`.
+
+    diffusers' own per-step hook is the only honest source of step progress —
+    the denoise loop is theirs (ADR #6), and counting block loads instead would
+    guess wrong the moment a model streams a different number of blocks per
+    step. A caller's own callback is chained, not replaced. Pipelines too old
+    to accept the kwarg simply get no step events; every other telemetry
+    channel still works.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(type(pipe).__call__).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic __call__
+        return call_kwargs
+    if "callback_on_step_end" not in params:
+        logger.debug("%s takes no callback_on_step_end; no step events", type(pipe).__name__)
+        return call_kwargs
+
+    chained = call_kwargs.get("callback_on_step_end")
+
+    def _on_step(
+        inner_pipe: Any, index: int, timestep: Any, kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        total = int(getattr(inner_pipe, "num_timesteps", 0) or steps)
+        notify(observer, "step", index + 1, total)
+        if callable(chained):
+            result = chained(inner_pipe, index, timestep, kwargs)
+            if isinstance(result, dict):
+                return result
+        return kwargs
+
+    return {**call_kwargs, "callback_on_step_end": _on_step}
 
 
 def _assign(root: nn.Module, full_name: str, value: torch.Tensor) -> None:
@@ -240,6 +279,9 @@ class Orchestrator:
         self.extra_manifests = dict(extra_manifests or {})
         self.lora = lora
         self.stats = PhaseStats()
+        # Engines of the generation currently in flight, so a UI can poll block
+        # counters live (runtime/progress.py). Empty between runs.
+        self.engines: dict[str, StreamingEngine] = {}
         self.vae_features = configure_vae(getattr(pipe, "vae", None))
         logger.info(
             "Orchestrator ready: %s, TEs=%s, VAE=%s",
@@ -254,12 +296,14 @@ class Orchestrator:
         *,
         negative_prompt: str | list[str] | None = None,
         encode_kwargs: Mapping[str, Any] | None = None,
+        observer: RunObserver | None = None,
         **call_kwargs: Any,
     ) -> Any:
         """Encode -> stream-denoise -> decode, with the phases timed."""
         stats = PhaseStats(steps=int(call_kwargs.get("num_inference_steps", 0) or 0))
         started = time.perf_counter()
 
+        notify(observer, "phase_started", "encode")
         encoded: EncodedPrompt = encode_and_evict(
             self.pipe,
             self.adapter,
@@ -272,6 +316,10 @@ class Orchestrator:
         )
         stats.encode_s = encoded.seconds
         stats.encode_cached = encoded.cached
+        notify(observer, "phase_finished", "encode", encoded.seconds)
+
+        if observer is not None:
+            call_kwargs = _with_step_callback(self.pipe, call_kwargs, observer, stats.steps)
 
         phase_times: dict[str, float] = {}
         transformer = self.pipe.transformer
@@ -287,6 +335,7 @@ class Orchestrator:
             lora=self.lora,
         )
         engines: dict[str, StreamingEngine] = {"transformer": engine}
+        self.engines = engines
         handover_hooks = arm_expert_handover(
             self.pipe,
             self.extra_manifests,
@@ -297,10 +346,11 @@ class Orchestrator:
             lora=self.lora,
         )
         denoise_start = time.perf_counter()
+        notify(observer, "phase_started", "denoise")
         try:
             with (
                 force_execution_device(self.pipe, self.device),
-                vae_on_demand(self.pipe, self.device, phase_times),
+                vae_on_demand(self.pipe, self.device, phase_times, observer=observer),
                 torch.no_grad(),
             ):
                 result = self.pipe(**encoded.kwargs, **call_kwargs)
@@ -314,12 +364,14 @@ class Orchestrator:
                 if name != "transformer":
                     stats.engine[f"{name}_block_loads"] = eng.stats["block_loads"]
                     stats.engine[f"{name}_bytes_loaded"] = eng.stats["bytes_loaded"]
+            self.engines = {}
             clean_memory()
 
         stats.decode_s = phase_times.get("decode_s", 0.0)
         stats.denoise_s = max(0.0, time.perf_counter() - denoise_start - stats.decode_s)
         stats.total_s = time.perf_counter() - started
         self.stats = stats
+        notify(observer, "phase_finished", "denoise", stats.denoise_s)
         logger.info(
             "Generated in %.2fs (encode %.2fs, denoise %.2fs, decode %.2fs)",
             stats.total_s,
