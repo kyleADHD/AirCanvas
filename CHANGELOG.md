@@ -2,6 +2,27 @@
 
 ## 0.2.0 — Unreleased
 
+- **FLUX.2 klein support** (`adapters/flux2.py`): `Flux2Transformer2DModel`
+  gets a named adapter — block plan (`num_layers` double-stream then
+  `num_single_layers` single-stream), `encode_prompt` returning
+  `(prompt_embeds, text_ids)`, a 512-token text budget and the base 16-px
+  latent stride. Without it the model fell to GenericAdapter, which finds the
+  right blocks but guesses the encode contract that load-run-evict depends on.
+  The Studio catalog gains both klein sizes with figures read from the models'
+  own files: 4B is 25 blocks / 7.75 GB DiT (Apache-2.0, ungated), 9B is 32
+  blocks / 18.16 GB. Verified end to end on a real `Flux2KleinPipeline`.
+- **The Studio can generate from any shard cache on disk**, not just catalog
+  models: anything from `aircanvas split <path-or-repo>` now appears on the
+  Desk with a verdict solved against its REAL manifest. Previously such a
+  cache showed up in Settings but could not be selected.
+- Fixed: `pipe.report(as_dict=True)` dropped five plan fields that
+  `ResidencyPlan.describe()` prints — including the VRAM budget — so a saved
+  report could not redraw the residency plan it described. The plan now
+  serialises itself (`ResidencyPlan.as_dict()`), enumerated from the
+  dataclass so the two cannot drift again.
+- Fixed: a shard cache split from a relative local path recorded that path
+  verbatim, so opening the Studio from another directory turned it into a Hub
+  repo id and a surprise download. Local sources are recorded absolute.
 - **AirCanvas Studio, the local desktop UI** (`aircanvas[studio]` extra):
   `aircanvas studio` serves a single-page app from the same process that owns
   the pipeline — twelve screens across a Simple mode that shows only times,

@@ -20,6 +20,28 @@ import { chevronDown, chevronRight } from '../lib/icons.js';
 import { bar, eyebrow, frame, metric, statusDot } from '../components/widgets.js';
 
 const SPARK_BARS = 48;
+const PHASES = ['encode', 'denoise', 'decode'];
+
+/**
+ * Phase card state.
+ *
+ * Decode runs *inside* the pipeline call, so the runtime reports it started
+ * before denoise reports finishing — for that window denoise has no measured
+ * seconds yet. Ordering settles it: a phase a later phase has overtaken is
+ * done, whatever its number says, so the timeline never shows a completed
+ * phase as pending.
+ */
+function phaseState(name, run) {
+  const measured = (run.phaseSeconds || {})[name];
+  const terminal = ['done', 'cancelled', 'failed'].includes(run.status);
+  const here = PHASES.indexOf(name);
+  const now = PHASES.indexOf(run.phase);
+  if (measured !== undefined && measured !== null) return { klass: '', measured };
+  if (terminal) return { klass: '', measured: null };
+  if (name === run.phase) return { klass: '.active', measured: null };
+  if (now > here) return { klass: '', measured: null };
+  return { klass: '.pending', measured: null };
+}
 
 export function runScreen() {
   return store.state.mode === 'pro' ? proRun() : simpleRun();
@@ -83,10 +105,15 @@ function runRail(run) {
         ].filter(Boolean).join(' · ')),
     ),
     h('div.col', { style: { gap: '9px' } },
+      // VRAM in use is read from the CUDA allocator. Without a CUDA device
+      // there is nothing to read, so the row says why instead of showing a
+      // dash over an empty track that looks like a stuck meter.
       metric('VRAM in use', vramUsed === null || vramUsed === undefined
-        ? fmt.DASH
+        ? (store.state.machine.device === 'cuda' ? fmt.DASH : 'no CUDA device')
         : `${fmt.gbNum(vramUsed, 2)} / ${fmt.gbNum(vramTotal)} GB`),
-      bar(vramTotal ? ((vramUsed || 0) / vramTotal) * 100 : 0, { height: 4 }),
+      vramUsed === null || vramUsed === undefined
+        ? null
+        : bar(vramTotal ? (vramUsed / vramTotal) * 100 : 0, { height: 4 }),
       metric('Pinned ring', run.pinnedBytes
         ? `${fmt.gbNum(run.pinnedBytes, 2)} GB · ${run.ringBlocks} blocks`
         : fmt.DASH),
@@ -125,12 +152,11 @@ function decodeNote(run) {
 }
 
 function phaseCard(name, run, { width, note }) {
-  const measured = (run.phaseSeconds || {})[name];
-  const active = run.phase === name && !['done', 'cancelled', 'failed'].includes(run.status);
-  const complete = measured !== undefined && measured !== null;
-  const klass = `div.phase.side${active ? '.active' : complete ? '' : '.pending'}`;
+  const { klass, measured } = phaseState(name, run);
+  const active = klass === '.active';
+  const complete = measured !== null;
 
-  return h(klass, { style: { width: `${width}px` } },
+  return h(`div.phase.side${klass}`, { style: { width: `${width}px` } },
     h('div.row', { style: { gap: '7px' } },
       statusDot(active ? 'run' : complete ? 'ok' : 'idle'),
       h('span.name', name),
@@ -142,12 +168,12 @@ function phaseCard(name, run, { width, note }) {
 }
 
 function denoiseCard(run) {
-  const measured = (run.phaseSeconds || {}).denoise;
-  const active = run.phase === 'denoise' && !['done', 'cancelled', 'failed'].includes(run.status);
-  const complete = measured !== undefined && measured !== null;
+  const { klass, measured } = phaseState('denoise', run);
+  const active = klass === '.active';
+  const complete = measured !== null;
   const pct = run.blocks ? (run.block / run.blocks) * 100 : 0;
 
-  return h(`div.phase.main${active ? '.active' : complete ? '' : '.pending'}`,
+  return h(`div.phase.main${klass}`,
     h('div.row', { style: { gap: '7px' } },
       statusDot(active ? 'run' : complete ? 'ok' : 'idle'),
       h('span.name', 'denoise'),
@@ -179,6 +205,17 @@ function ticker(run) {
     const height = source ? Math.max(14, (source / peak) * 100) : 30;
     return h(`i${i < filled ? '.on' : ''}`, { style: { height: `${height}%` } });
   });
+
+  // Nothing streams when the whole model fits: that is the good case, and the
+  // strip has to read as one rather than as a stalled counter.
+  if (!run.blocks) {
+    return h('div.ticker',
+      h('span.mono.accent', { style: { fontSize: '12px' } },
+        `all ${run.residentBlocks} blocks resident · nothing streamed`),
+      h('span.push.t5', { style: { fontSize: '11px' } },
+        'this card holds the model — AirCanvas is out of the way'),
+    );
+  }
 
   return h('div.ticker',
     h('span.mono.accent', { style: { fontSize: '12px' } },

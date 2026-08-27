@@ -494,7 +494,11 @@ def split_model(
         )
 
     manifest = Manifest(
-        source=str(source),
+        # A local source is recorded ABSOLUTE. The cache outlives the shell it
+        # was made in — `aircanvas split ./my-model` then `aircanvas studio`
+        # from anywhere else must not turn a stale relative path into a Hub
+        # repo id and a surprise download.
+        source=str(Path(source).resolve()) if Path(source).is_dir() else str(source),
         revision=revision,
         subfolder=subfolder,
         model_class=model_class,

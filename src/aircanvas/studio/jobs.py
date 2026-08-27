@@ -562,6 +562,10 @@ class RunManager:
             model.repo_id,
             compression=compression,
             subfolder=model.subfolder,
+            # A locally-split model names its own cache: its source path may no
+            # longer exist (split-once-delete-original is the whole point), so
+            # the default location derived from the source must not be trusted.
+            shard_cache=model.cache_dir,
             vram_budget=_as_int(caps.get("vramBytes")) or "auto",
             ram_budget=_as_int(caps.get("ramBytes")) or "auto",
             prefetch=bool(settings.get("backgroundPrefetch", True)),
@@ -573,8 +577,11 @@ class RunManager:
             source = lora.get("source") or lora.get("id")
             if source:
                 pipe.load_lora(str(source), scale=float(lora.get("scale", 1.0)))
-        run.blocks = len(pipe.manifest.blocks)
-        run.block_bytes = [b.n_bytes for b in pipe.manifest.blocks]
+        # The ticker counts what STREAMS. On a card big enough to hold the
+        # whole model that is zero, and saying "block 0/57" would misreport a
+        # run that is going perfectly — the screen says "all resident" instead.
+        run.blocks = pipe.plan.streamed_blocks
+        run.block_bytes = [b.n_bytes for b in pipe.manifest.blocks[pipe.plan.resident_blocks :]]
         run.resident_blocks = pipe.plan.resident_blocks
         run.ring_blocks = pipe.plan.ring_depth
         run.pinned_bytes = pipe.plan.pinned_bytes

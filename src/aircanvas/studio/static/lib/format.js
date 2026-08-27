@@ -29,6 +29,20 @@ export function mb(bytes, digits = 0) {
   return `${(Number(bytes) / 1e6).toFixed(digits)} MB`;
 }
 
+/**
+ * A size in the unit that keeps its digits: GB down to a tenth of one, then
+ * MB, then KB. Sizes in this app are usually tens of GB, which is why most
+ * readouts are fixed to GB — but a cache holding one small model should not
+ * report itself as "0.0 GB".
+ */
+export function size(bytes, digits = 1) {
+  if (bytes === null || bytes === undefined) return DASH;
+  const n = Number(bytes);
+  if (Math.abs(n) >= 1e8) return `${(n / 1e9).toFixed(digits)} GB`;
+  if (Math.abs(n) >= 1e5) return `${(n / 1e6).toFixed(0)} MB`;
+  return `${(n / 1e3).toFixed(0)} KB`;
+}
+
 export function gbps(bytesPerSecond, digits = 2) {
   if (!bytesPerSecond) return DASH;
   return `${(Number(bytesPerSecond) / 1e9).toFixed(digits)} GB/s`;

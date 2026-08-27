@@ -378,3 +378,20 @@ def _await_run(client, run_id: str, timeout: float = 30.0) -> dict:
             return run
         time.sleep(0.05)
     raise AssertionError(f"run {run_id} did not finish within {timeout}s")
+
+
+def test_report_plan_dict_covers_every_plan_field() -> None:
+    """A saved report must be able to redraw the plan it describes.
+
+    The Report screen reads the residency bar's axis out of the plan dict.
+    Four byte counts were missing from it while `describe()` printed them, so
+    a persisted report drew a zero-width bar; `as_dict()` now enumerates the
+    dataclass so the two cannot drift again.
+    """
+    from dataclasses import fields
+
+    from aircanvas.streaming.residency import ResidencyPlan
+
+    plan = ResidencyPlan(resident_blocks=1, ring_depth=2, lookahead=2, ram_cache_bytes=3)
+    assert set(plan.as_dict()) == {f.name for f in fields(ResidencyPlan)}
+    assert plan.as_dict()["warnings"] == []  # tuples serialise as JSON arrays

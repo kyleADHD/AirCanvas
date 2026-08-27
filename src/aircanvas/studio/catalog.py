@@ -19,13 +19,17 @@ a made-up download size.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 from aircanvas.config import Compression
 from aircanvas.sharding.manifest import Manifest, synthetic_manifest
 from aircanvas.streaming.residency import InsufficientVRAMError, Workload, solve
 from aircanvas.utils.hw import HardwareProfile
+
+logger = logging.getLogger(__name__)
 
 GB = 1_000_000_000
 MB = 1_000_000
@@ -109,10 +113,18 @@ class StudioModel:
     fps: int = 16
     guidance: float = 3.5
     warnings: tuple[str, ...] = field(default=())
+    #: Set for a model discovered on disk: the shard cache's own manifest.
+    real_manifest: Manifest | None = None
+    #: Local shard cache this row came from, if it was not in the table.
+    cache_dir: str | None = None
 
     @property
     def video(self) -> bool:
         return self.kind == "video"
+
+    @property
+    def local(self) -> bool:
+        return self.cache_dir is not None
 
     def disk_bytes(self, fmt: str) -> int:
         """Bytes the shard cache occupies in `fmt`.
@@ -133,7 +145,18 @@ class StudioModel:
         return self.native_bytes
 
     def manifest(self, fmt: str) -> Manifest:
-        """A manifest shaped like this model, for the solver."""
+        """A manifest to plan against.
+
+        For a model already on disk this is its REAL manifest — actual
+        per-block bytes, actual resident set — so the verdict and the estimate
+        describe the shards that will be streamed rather than a model-shaped
+        approximation of them. Only a model that has not been split yet needs
+        the synthetic one.
+        """
+        if self.real_manifest is not None and self.real_manifest.compression == (
+            None if fmt == "bf16" else fmt
+        ):
+            return self.real_manifest
         compression: Compression = None if fmt == "bf16" else fmt  # type: ignore[assignment]
         return synthetic_manifest(
             source=self.repo_id,
@@ -222,31 +245,57 @@ MODELS: tuple[StudioModel, ...] = (
         simple=SimpleFacing("Best quality images", "Near-identical quality", "good"),
         note="the 16.6 GB Qwen2.5-VL text encoder runs load-run-evict",
     ),
+    # The two FLUX.2 klein sizes. Every figure below is read from the model's
+    # own files: block counts and per-block bytes come from instantiating the
+    # published transformer config on meta (which reproduces the checkpoint
+    # size to the byte), native size is the sum of the repo's safetensors, and
+    # the GGUF size is the file's own length on the Hub.
+    StudioModel(
+        id="flux2-klein-4b",
+        name="FLUX.2-klein-4B",
+        repo_id="black-forest-labs/FLUX.2-klein-4B",
+        kind="image",
+        params="3.9B",
+        n_blocks=25,  # 5 double-stream + 20 single-stream
+        dit_bytes=7_751_109_744,
+        largest_block_bytes=491 * MB,  # a double-stream block; singles are 245 MB
+        resident_bytes=390 * MB,
+        native_bytes=15_964_000_000,  # DiT 7.75 + Qwen3 TE 8.04 + VAE 0.17
+        hidden=3072,  # 24 heads x 128
+        tokens=4608,  # 1024^2 -> 4096 image + 512 text
+        steps=20,
+        on_disk={},
+        gguf=GgufSource(
+            "unsloth/FLUX.2-klein-4B-GGUF:flux-2-klein-4b-Q4_K_S.gguf",
+            2_583_077_440,
+            "Q4_K_S",
+        ),
+        simple=SimpleFacing("Balanced images", "Near-identical quality", "good"),
+        note="Apache-2.0 and ungated; distilled, so no CFG and one forward per step",
+    ),
     StudioModel(
         id="flux2-klein-9b",
         name="FLUX.2-klein-9B",
-        repo_id="black-forest-labs/FLUX.2-klein",
+        repo_id="black-forest-labs/FLUX.2-klein-9B",
         kind="image",
-        params="9B",
-        # Derived: 9B params x 2 bytes = 18.0 GB, which the 18.2 GB original
-        # checkpoint in docs/BENCHMARKS.md corroborates.
-        n_blocks=48,
-        dit_bytes=int(18.0 * GB),
-        largest_block_bytes=500 * MB,
-        resident_bytes=1 * GB,
-        native_bytes=int(18.2 * GB),
-        hidden=3072,
+        params="9.1B",
+        n_blocks=32,  # 8 double-stream + 24 single-stream
+        dit_bytes=18_157_185_168,
+        largest_block_bytes=872 * MB,  # a double-stream block; singles are 436 MB
+        resident_bytes=709 * MB,
+        native_bytes=34_706_000_000,  # DiT 18.16 + Qwen3 TE 16.38 + VAE 0.17
+        hidden=4096,  # 32 heads x 128
         tokens=4608,
         steps=20,
-        on_disk={"fp8": int(8.7 * GB)},
+        on_disk={},
         gguf=GgufSource(
-            "bullerwins/FLUX.2-klein-GGUF:flux2-klein-Q4_K_S.gguf",
-            int(5.8 * GB),
+            "unsloth/FLUX.2-klein-9B-GGUF:flux-2-klein-9b-Q4_K_S.gguf",
+            int(5.8 * GB),  # docs/BENCHMARKS.md, the size that harness downloads
             "Q4_K_S",
             verified=True,
         ),
         gated=True,
-        simple=SimpleFacing("Balanced images", "Near-identical quality", "good"),
+        simple=SimpleFacing("Best quality images", "Near-identical quality", "good"),
         note="Q4_K_S source verified bitwise by benchmarks/verify_gguf_lora.py",
     ),
     StudioModel(
@@ -349,12 +398,81 @@ MODELS: tuple[StudioModel, ...] = (
 
 BY_ID: dict[str, StudioModel] = {m.id: m for m in MODELS}
 
+#: Models discovered on this machine's disk that the table does not list —
+#: anything split with `aircanvas split <path-or-repo>`. Refreshed by the
+#: Studio whenever it scans the cache (server.Studio.models), and looked up by
+#: `get()` so a run started from the Desk resolves the same way a catalog
+#: model does. Process-local by design: it describes THIS box's disk.
+LOCAL: dict[str, StudioModel] = {}
+
 
 def get(model_id: str) -> StudioModel:
+    model = BY_ID.get(model_id) or LOCAL.get(model_id)
+    if model is None:
+        raise KeyError(f"Unknown model {model_id!r}")
+    return model
+
+
+def local_id(cache_dir: str) -> str:
+    """Stable id for a shard cache, so a reload keeps the Desk's selection."""
+    import hashlib
+
+    return "local-" + hashlib.sha256(cache_dir.encode("utf-8")).hexdigest()[:10]
+
+
+def from_installed(record: Any) -> StudioModel | None:
+    """A catalog row for a shard cache that is not in the table.
+
+    The Studio can generate from anything already split — `aircanvas split
+    ./my-model` should not leave a cache the UI can see in Settings but not
+    select on the Desk. Every number comes from the manifest itself, so the
+    verdict is solved against the real shards; the fields a manifest cannot
+    know (a marketing parameter count, a native download size, a plain-words
+    quality note) are simply absent rather than guessed.
+    """
+    from aircanvas.sharding.manifest import Manifest
+
     try:
-        return BY_ID[model_id]
-    except KeyError:
-        raise KeyError(f"Unknown model {model_id!r}") from None
+        manifest = Manifest.load(Path(record.cache_dir))
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        logger.warning("Ignoring shard cache %s (%s)", record.cache_dir, e)
+        return None
+    if not manifest.blocks:
+        return None
+
+    fmt = manifest.compression or "bf16"
+    # Caches written before sources were recorded absolute may hold a relative
+    # path; resolve it against the cwd rather than letting it reach the Hub.
+    source = str(manifest.source)
+    if Path(source).is_dir():
+        source = str(Path(source).resolve())
+    name = Path(source).name or source
+    materialized = sum(b.materialized_bytes for b in manifest.blocks)
+    video = "video" in manifest.adapter or manifest.adapter in ("wan", "cogvideox")
+    return StudioModel(
+        id=local_id(record.cache_dir),
+        name=name,
+        repo_id=source,
+        kind="video" if video else "image",
+        # Parameters are inferred from bf16 bytes; below a rounding
+        # threshold the figure would read "0.0B", so say nothing.
+        params=f"{materialized / 2e9:.1f}B" if materialized >= 1e8 else "",
+        n_blocks=len(manifest.blocks),
+        dit_bytes=materialized,
+        largest_block_bytes=max(b.materialized_bytes for b in manifest.blocks),
+        resident_bytes=manifest.resident_materialized_bytes,
+        native_bytes=0,  # already on disk; nothing left to download
+        hidden=Workload.hidden,
+        tokens=Workload.tokens,
+        steps=20,
+        on_disk={fmt: record.disk_bytes},
+        formats=(fmt,),  # the only format it is actually split into
+        default_format=fmt,
+        subfolder=manifest.subfolder,
+        note=f"split locally from {source}",
+        real_manifest=manifest,
+        cache_dir=record.cache_dir,
+    )
 
 
 # -- verdicts ---------------------------------------------------------------

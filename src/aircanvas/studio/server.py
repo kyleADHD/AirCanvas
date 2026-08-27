@@ -113,9 +113,24 @@ class Studio:
         rule that a verdict is solver output, not a stored table.
         """
         hardware = self.probe().hardware()
-        installed = {m.source: m for m in self.installed()}
+        records = self.installed()
+        installed = {m.source: m for m in records}
+
+        # Anything split locally that the table does not list gets a row of its
+        # own, built from its manifest. Without this a cache made by
+        # `aircanvas split ./my-model` shows up in Settings but cannot be
+        # selected on the Desk, which is a strange thing for a UI to do.
+        catalog.LOCAL.clear()
+        known = {m.repo_id for m in catalog.MODELS}
+        for record in records:
+            if record.source in known or not record.complete:
+                continue
+            local = catalog.from_installed(record)
+            if local is not None:
+                catalog.LOCAL[local.id] = local
+
         rows: list[dict[str, Any]] = []
-        for model in catalog.MODELS:
+        for model in (*catalog.MODELS, *catalog.LOCAL.values()):
             verdicts = {
                 fmt: catalog.verdict(model, fmt, hardware).as_dict() for fmt in model.formats
             }
@@ -175,6 +190,7 @@ class Studio:
                         "guidance": model.guidance,
                     },
                     "installed": here.as_dict() if here else None,
+                    "local": model.local,
                 }
             )
         return rows

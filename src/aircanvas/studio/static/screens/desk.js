@@ -308,7 +308,7 @@ function modelSection(model) {
       ),
       h('span.mono.t3', { style: { fontSize: '11px' } },
         installed
-          ? `${model.params} · ${installed.blocks} shards · ${fmt.gb(installed.diskBytes)} cached`
+          ? `${[model.params, `${installed.blocks} shards`, `${fmt.size(installed.diskBytes)} cached`].filter(Boolean).join(' · ')}`
           : `${model.params} · ${model.blocks} blocks · not split yet`),
       model.measured && model.measured.residentRatio
         ? h('span.ok', { style: { fontSize: '11px' } }, 'Byte-identical to full-VRAM execution')
@@ -420,14 +420,21 @@ function budgetSection(model, isVideo) {
   const format = desk.format || (model ? preferredFormat(model) : 'fp8');
   const verdict = model ? model.verdicts[format] : null;
 
+  // With no CUDA device the "VRAM" the solver spends IS system RAM, so a
+  // "/ 0.0 GB" denominator would be nonsense. The cap still matters — it is
+  // what the plan is solved against — so it stays, without the false total.
+  const cuda = machine.device === 'cuda';
+
   return h('section', { style: { display: 'flex', flexDirection: 'column', gap: '13px' } },
     eyebrow('Budget caps'),
     h('div.col', { style: { gap: '7px' } },
-      metric('VRAM', `${fmt.gbNum(vramCap)} / ${fmt.gbNum(machine.vramTotalBytes)} GB`),
+      metric(cuda ? 'VRAM' : 'Device memory',
+        cuda ? `${fmt.gbNum(vramCap)} / ${fmt.gbNum(machine.vramTotalBytes)} GB`
+             : `${fmt.gbNum(vramCap)} GB cap`),
       slider({
         value: vramCap,
-        min: 1e9,
-        max: Math.max(machine.vramTotalBytes || 1e9, vramCap),
+        min: 5e8,
+        max: Math.max(machine.vramTotalBytes || machine.ramTotalBytes || 1e9, vramCap),
         step: 1e8,
         ariaLabel: 'VRAM cap',
         onInput: (value) => patchDesk({ caps: { ...caps, vramBytes: value } }),

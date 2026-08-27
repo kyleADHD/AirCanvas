@@ -100,6 +100,21 @@ class ResidencyPlan:
     def stream_config(self) -> StreamConfig:
         return StreamConfig(gpu_slots=self.gpu_slots, ring_depth=self.ring_depth)
 
+    def as_dict(self) -> dict[str, object]:
+        """Every field, for `pipe.report(as_dict=True)` and anything reading it.
+
+        Enumerated from the dataclass rather than listed by hand: a report that
+        omits a field `describe()` prints cannot redraw the plan it describes,
+        and hand-written key lists are exactly how that drift happens.
+        """
+        from dataclasses import fields
+
+        out: dict[str, object] = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            out[f.name] = list(value) if isinstance(value, tuple) else value
+        return out
+
     def describe(self) -> str:
         gb = 1e9
         lines = [

@@ -98,9 +98,9 @@ function cacheSection() {
       h('div.row', {
         style: { alignItems: 'baseline', gap: '10px', borderTop: '1px solid var(--line)', paddingTop: '13px' },
       },
-        h('span.mono', { style: { fontSize: '22px' } }, fmt.gb(cache.totalBytes)),
+        h('span.mono', { style: { fontSize: '22px' } }, fmt.size(cache.totalBytes)),
         h('span.t3', { style: { fontSize: '12px' } },
-          `across ${models.length} model${models.length === 1 ? '' : 's'} · ${fmt.gb(free)} free on this volume`),
+          `across ${models.length} model${models.length === 1 ? '' : 's'} · ${fmt.size(free)} free on this volume`),
       ),
       models.length
         ? stacked(models.map((model, i) => ({
@@ -122,7 +122,7 @@ function cacheRow(model, index) {
     h('span.key', { style: { background: KEY_COLORS[index % KEY_COLORS.length] } }),
     h('span.grow.truncate', { title: model.source }, shortName(model.source)),
     h('span.mono.t3', `${model.format} · ${model.blocks} shards${model.complete ? '' : ' · incomplete'}`),
-    h('span.mono', { style: { width: '70px', textAlign: 'right' } }, fmt.gb(model.diskBytes)),
+    h('span.mono', { style: { width: '70px', textAlign: 'right' } }, fmt.size(model.diskBytes)),
     h('button.link.link-quiet', {
       type: 'button',
       onClick: () => {
@@ -257,8 +257,8 @@ function simpleSettings() {
           h('div.grow.col', { style: { gap: '4px' } },
             h('span', { style: { fontSize: '15px' } }, 'Storage'),
             h('span.t3', { style: { fontSize: '13px' } },
-              h('span.mono.t2', fmt.gb(cache.totalBytes)), ' used by models · ',
-              h('span.mono.t2', fmt.gb(cache.freeBytes)), ' free'),
+              h('span.mono.t2', fmt.size(cache.totalBytes)), ' used by models · ',
+              h('span.mono.t2', fmt.size(cache.freeBytes)), ' free'),
           ),
           h('button.btn.btn-accent.btn-lg', {
             type: 'button',
